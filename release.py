@@ -7,9 +7,9 @@
     ./release.py --check            # проверить согласованность VERSION / CHANGELOG / тега
 
 Тег `latest` — подвижный: после каждого выпуска переносится на новую версию
-(force-push тега), ссылка @latest всегда ведёт на последнюю версию. jsDelivr кеширует
-подвижные теги (CDN до 12 ч, браузер/WebView до 7 дней), поэтому для мгновенного
-обновления на устройстве используй ссылку с конкретным тегом @vX.Y.Z.
+(force-push тега) — для git/GitHub. В ссылках jsDelivr `@latest` использовать НЕЛЬЗЯ:
+jsDelivr принимает такой тег за версию и кеширует его как неизменяемый на год.
+Для автообновления на устройстве используй `@1` (последняя 1.x.x), для мгновенного — `@vX.Y.Z`.
 
 Перед выпуском опиши изменения в разделе «## [Unreleased]» файла CHANGELOG.md
 (подзаголовки «### Добавлено», «### Изменено», «### Исправлено», «### Удалено»).
@@ -151,7 +151,7 @@ def release(version, dry, push):
         run("git", "push", "origin", "v%s" % version)
         run("git", "push", "--force", "origin", "refs/tags/latest")
         print("Запушены main, тег v%s и latest" % version)
-        purge("latest")
+        purge("1")
         if shutil.which("gh"):
             run("gh", "release", "create", "v%s" % version, "--title", "v%s" % version, "--notes", section_body(read(CHANGELOG), version))
             print("Создан GitHub Release")
@@ -160,7 +160,7 @@ def release(version, dry, push):
 
     print("\nСсылки для Lampa (Настройки → Расширения → Добавить плагин):")
     print("  закреплённая (обновится сразу): https://cdn.jsdelivr.net/gh/%s@v%s/animevost.js" % (REPO, version))
-    print("  всегда последняя (кеш до 12 ч): https://cdn.jsdelivr.net/gh/%s@latest/animevost.js" % REPO)
+    print("  автообновление в рамках %s.x (кеш до 12 ч): https://cdn.jsdelivr.net/gh/%s@%s/animevost.js" % (version.split(".")[0], REPO, version.split(".")[0]))
 
 
 def main(argv):
