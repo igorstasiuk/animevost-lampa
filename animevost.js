@@ -460,12 +460,12 @@
             '.avost-btn.focus{background:#fff;color:#000}' +
             '.avost-row{margin-bottom:1.6em}' +
             '.avost-row__title{font-size:1.5em;padding:0 1.5em .6em;opacity:.9}' +
-            '.avost-card{position:relative;width:10.5em;margin:0 .5em;flex-shrink:0;display:inline-block;vertical-align:top;white-space:normal}' +
-            '.avost-row .scroll__body{padding-left:1em}' +
-            '.avost-card__img{position:relative;height:15em;border-radius:.7em;overflow:hidden;background:#2a2a2a}' +
-            '.avost-card__img img{width:100%;height:100%;object-fit:cover}' +
+            '.avost-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10em,1fr));gap:1.2em .9em;padding:0 1.5em}' +
+            '.avost-card{position:relative;min-width:0}' +
+            '.avost-card__img{position:relative;height:0;padding-top:145%;border-radius:.7em;overflow:hidden;background:#2a2a2a}' +
+            '.avost-card__img img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover}' +
             '.avost-card__badge{position:absolute;left:0;bottom:.5em;padding:.2em .6em;background:#e8590c;color:#fff;font-size:.9em;border-radius:0 .4em .4em 0}' +
-            '.avost-card__title{margin-top:.5em;font-size:1em;line-height:1.25;max-height:2.5em;overflow:hidden}' +
+            '.avost-card__title{margin-top:.5em;font-size:1em;line-height:1.25;max-height:2.5em;overflow:hidden;padding:0 .2em}' +
             '.avost-card.focus .avost-card__img{box-shadow:0 0 0 .22em #fff}' +
             '.avost-anime{display:flex;gap:2em;padding:1.5em}' +
             '.avost-anime__poster{width:15em;flex-shrink:0}' +
@@ -483,7 +483,7 @@
             '.avost-chip.focus{background:#fff;color:#000}' +
             '.avost-anime__descr{margin:1em 0;line-height:1.45;max-height:7.5em;overflow:hidden;opacity:.85}' +
             '.avost-anime__btns{display:flex;flex-wrap:wrap;gap:.8em;margin:1em 0}' +
-                        '.avost-row .scroll__body{display:flex;flex-wrap:nowrap;align-items:flex-start}' +
+                        '.avost-row--eps .scroll__body{display:flex;flex-wrap:nowrap;align-items:flex-start}' +
             '.avost-row--eps{margin-top:1em}' +
             '.avost-ep{position:relative;width:24em;margin:0 .6em;flex-shrink:0;border-radius:.8em;padding:.4em}' +
             '.avost-ep.focus{background:rgba(255,255,255,.16);box-shadow:0 0 0 .2em #fff}' +
@@ -497,16 +497,31 @@
             '.avost-ep__name{font-size:1.5em;margin-top:.5em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.avost-ep__sub{opacity:.65;margin-top:.15em;min-height:1.3em}' +
             '.avost-empty{padding:3em 1.5em;font-size:1.3em;opacity:.7}' +
-            '@media (max-width:700px){.avost-anime{flex-direction:column}.avost-anime__poster{width:10em}}' +
+            '@media (max-width:1100px){.avost-ep{width:20em}.avost-ep__img{height:11.2em}}' +
+            '@media (max-width:760px){.avost-anime{flex-direction:column;gap:1em;padding:1em}.avost-anime__poster{width:9em}' +
+            '.avost-anime__title{font-size:1.5em}.avost-grid{grid-template-columns:repeat(auto-fill,minmax(8em,1fr));padding:0 1em;gap:1em .7em}' +
+            '.avost-bar{padding:0 1em 1em}.avost-row__title{padding:0 1em .6em;font-size:1.3em}.avost-ep{width:16em}.avost-ep__img{height:9em}' +
+            '.avost-ep__name{font-size:1.2em}}' +
+            '@media (min-width:1900px){.avost-grid{grid-template-columns:repeat(auto-fill,minmax(11em,1fr))}}' +
             '</style>');
     }
 
     // Навигация пультом: каждый ряд — массив элементов, фокус двигаем сами,
     // а не через пространственный Navigator (на ТВ он прыгает между вложенными скроллами).
     function Grid(name, scroll) {
-        var rows = [], r = 0, c = 0, self = this;
+        var rows = [], r = 0, c = 0, self = this, layoutFn = null;
 
         function row(i) { return rows[i] || []; }
+
+        // Если ряды зависят от ширины экрана (сетка с переносом) — пересобираем их перед каждым ходом
+        function refresh() {
+            if (!layoutFn) return;
+            var cur = row(r)[c];
+            rows = layoutFn();
+            if (cur) self.track(cur);
+        }
+
+        this.layout = function (fn) { layoutFn = fn; rows = fn(); };
 
         this.set = function (arr) { rows = arr; };
         this.at = function (nr, nc) { r = nr; c = nc || 0; };
@@ -522,6 +537,7 @@
         };
 
         this.focus = function () {
+            refresh();
             if (!row(r).length) {
                 for (var i = 0; i < rows.length; i++) if (rows[i].length) { r = i; c = 0; break; }
             }
@@ -532,6 +548,7 @@
         };
 
         this.step = function (d) {
+            refresh();
             var n = r + d;
             while (n >= 0 && n < rows.length && !rows[n].length) n += d;
             if (n < 0 || n >= rows.length) return false;
@@ -547,10 +564,12 @@
                     self.focus();
                 },
                 left: function () {
+                    refresh();
                     if (c > 0) { c--; self.focus(); }
                     else Lampa.Controller.toggle('menu');
                 },
                 right: function () {
+                    refresh();
                     if (c < row(r).length - 1) { c++; self.focus(); }
                 },
                 up: function () {
@@ -582,7 +601,8 @@
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
         var html = $('<div class="avost"></div>');
         var grid = new Grid('animevost_main', scroll);
-        var rows = [];
+        var sections = [];
+        var btns = [];
         var bar;
 
         scroll.minus();
@@ -599,28 +619,43 @@
             return el;
         }
 
+        // Секция — адаптивная сетка с переносом строк: число колонок зависит от ширины экрана
         function row(title, list, badgeFn) {
             var items = [];
-            var line = new Lampa.Scroll({ horizontal: true, step: 300 });
-            var wrap = $('<div class="avost-row"><div class="avost-row__title"></div></div>');
+            var wrap = $('<div class="avost-row"><div class="avost-row__title"></div><div class="avost-grid"></div></div>');
+            var box = wrap.find('.avost-grid');
             wrap.find('.avost-row__title').text(title).toggle(!!title);
 
             list.forEach(function (a) {
                 var el = card(a, badgeFn && badgeFn(a));
                 el.on('hover:focus', function () {
                     grid.track(el);
-                    line.update(el, true);
-                    scroll.update(wrap, false);
+                    scroll.update(el, false);
                 });
                 el.on('hover:hover hover:touch', function () { grid.track(el); });
                 el.on('hover:enter', function () { openAnime(a); });
-                line.append(el);
+                box.append(el);
                 items.push(el);
             });
 
-            wrap.append(line.render());
             scroll.append(wrap);
-            rows.push(items);
+            sections.push(items);
+        }
+
+        // Визуальные ряды секций: карточки с одинаковым offsetTop лежат в одной строке
+        function layoutRows() {
+            var out = [btns];
+            sections.forEach(function (items) {
+                var byTop = {}, tops = [];
+                items.forEach(function (el) {
+                    var t = el[0].offsetTop;
+                    if (!byTop[t]) { byTop[t] = []; tops.push(t); }
+                    byTop[t].push(el);
+                });
+                tops.sort(function (x, y) { return x - y; });
+                tops.forEach(function (t) { out.push(byTop[t]); });
+            });
+            return out;
         }
 
         function button(label, act) {
@@ -634,7 +669,7 @@
 
         function toolbar() {
             bar = $('<div class="avost-bar"></div>');
-            var btns = [];
+            btns = [];
             btns.push(button('Поиск', function () {
                 Lampa.Input.edit({ free: true, title: 'Поиск аниме', nosave: true, value: '' }, function (value) {
                     if (value) Lampa.Activity.push({ url: '', title: 'Поиск: ' + value, component: 'animevost_main', query: value, page: 1 });
@@ -652,7 +687,6 @@
             });
             btns.push(pl);
             scroll.append(bar);
-            rows.push(btns);
         }
 
         function history() {
@@ -663,15 +697,15 @@
         }
 
         function finish() {
-            grid.set(rows);
-            grid.at(rows.length > 1 ? 1 : 0, 0); // сразу на первую карточку, а не на панель кнопок
+            grid.layout(layoutRows);
+            grid.at(sections.length ? 1 : 0, 0); // сразу на первую карточку, а не на панель кнопок
             self.activity.loader(false);
             self.activity.toggle();
         }
 
-        function build(sections) {
+        function build(groups) {
             scroll.clear();
-            rows = [];
+            sections = [];
             toolbar();
 
             if (!object.query) {
@@ -681,16 +715,16 @@
                 }
             }
 
-            if (!sections.length) {
+            if (!groups.length) {
                 scroll.append($('<div class="avost-empty">Ничего не найдено</div>'));
             }
-            sections.forEach(function (s) { row(s.title, s.items); });
+            groups.forEach(function (g) { row(g.title, g.items); });
             finish();
         }
 
         function fail() {
             scroll.clear();
-            rows = [];
+            sections = [];
             toolbar();
             scroll.append($('<div class="avost-empty">Не удалось загрузить данные AnimeVost. Проверьте сеть или адрес API в настройках.</div>'));
             finish();
@@ -700,15 +734,7 @@
             self.activity.loader(true);
             if (object.query) {
                 searchAnime(object.query, function (list) {
-                    // результаты рядами по 7 карточек, чтобы по ним удобно ходить пультом
-                    var sections = [];
-                    for (var i = 0; i < list.length; i += 7) {
-                        sections.push({
-                            title: i ? '' : 'Найдено: ' + list.length,
-                            items: list.slice(i, i + 7)
-                        });
-                    }
-                    build(sections);
+                    build([{ title: 'Найдено: ' + list.length, items: list }]);
                 }, fail);
             } else {
                 loadOngoing(function (list) { build(groupByDay(list)); }, fail, force);
