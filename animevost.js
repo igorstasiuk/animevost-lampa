@@ -730,6 +730,8 @@
             '.avost-anime__timer{margin:.3em 0 .6em;font-size:1.2em;color:#ffa94d}' +
             '.avost-anime__descr{margin:1em 0;line-height:1.45;max-height:7.5em;overflow:hidden;opacity:.85}' +
             '.avost-anime__btns{display:flex;flex-wrap:wrap;margin:1em 0 .2em}.avost-anime__btns .avost-btn,.avost-anime__btns .avost-dd-wrap{margin:0 .8em .8em 0}' +
+            // обёртка выпадающего списка — flex-контейнер, кнопка в ней растягивается на всю высоту ряда (как соседние кнопки) без двойных отступов
+            '.avost-anime__btns .avost-dd-wrap{display:flex}.avost-anime__btns .avost-dd-wrap>.avost-btn{margin:0;flex:1 1 auto}' +
                         '.avost-row--eps .scroll__body{display:flex;flex-wrap:nowrap;align-items:flex-start}' +
             '.avost-row--eps{margin-top:1em}' +
             '.avost-ep{position:relative;width:24em;margin:0 .6em;flex-shrink:0;border-radius:.8em;padding:.4em}' +
