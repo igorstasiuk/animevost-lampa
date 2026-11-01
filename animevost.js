@@ -758,12 +758,12 @@
             '@media (max-width:519px){.avost-card{width:33.3333%}}' +
             '@media (max-width:379px){.avost-card{width:50%}}' +
             '.avost-dd-wrap{position:relative;display:inline-block}' +
-            '.avost-dd{position:absolute;left:0;top:100%;margin-top:.4em;min-width:20em;max-width:34em;max-height:20em;overflow:hidden;background:#2b2b2b;border-radius:.7em;padding:.4em;box-shadow:0 .5em 2em rgba(0,0,0,.6);z-index:20}' +
-            '.avost-dd__item{position:relative;display:block;padding:.6em .9em;border-radius:.5em}' +
+            '.avost-dd{position:absolute;left:0;top:100%;margin-top:.4em;box-sizing:border-box;width:30em;max-width:90vw;max-height:20em;overflow:hidden;background:#2b2b2b;border-radius:.7em;padding:.4em;box-shadow:0 .5em 2em rgba(0,0,0,.6);z-index:20}' +
+            '.avost-dd__item{position:relative;display:block;box-sizing:border-box;width:100%;padding:.6em .9em;border-radius:.5em;white-space:normal;word-wrap:break-word;overflow-wrap:break-word}' +
             '.avost-dd__item.focus{background:#fff;color:#000}' +
             '.avost-dd__item--current .avost-dd__name:before{content:"✓ "}' +
-            '.avost-dd__name{display:block;font-size:1.15em}' +
-            '.avost-dd__sub{display:block;opacity:.6;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+            '.avost-dd__name{display:block;font-size:1.15em;line-height:1.25;white-space:normal;word-wrap:break-word}' +
+            '.avost-dd__sub{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;opacity:.6;font-size:.9em;line-height:1.25;margin-top:.15em;white-space:normal;word-wrap:break-word;overflow:hidden}' +
             '</style>');
     }
 
@@ -1323,6 +1323,8 @@
                 ddItems.push(it);
             });
             host.append(dd);
+            // не даём панели уехать за правый край экрана — прижимаем к правому краю кнопки
+            if (dd[0].getBoundingClientRect().right > window.innerWidth) dd.css({ left: 'auto', right: 0 });
             scroll.update(head, false);
 
             Lampa.Controller.add('animevost_dd', {
