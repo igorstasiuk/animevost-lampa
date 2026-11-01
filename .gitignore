@@ -2,3 +2,7 @@ node_modules/
 .cache/
 .omc/
 .DS_Store
+
+# Локальные файлы Claude Code — не публиковать
+.claude/
+CLAUDE.md

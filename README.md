@@ -127,5 +127,3 @@ npm test                    # интеграционные тесты (jsdom + �
 npm run check               # синтаксис + согласованность версии/ченджлога/тега
 sh tools/lampa-source.sh    # скачать бандл Lampa в .cache/ — эталон для проверки API
 ```
-
-Правила и ограничения проекта — в [CLAUDE.md](CLAUDE.md). Для работы с Claude Code в папке `.claude/` лежат агенты (`lampa-api-checker`, `tv-nav-reviewer`, `plugin-qa`, `release-manager`), скиллы (`/add-feature`, `/release`, `/test-plugin`, `/lampa-source`), правила по путям файлов и хук, проверяющий синтаксис и ES5 после каждой правки `animevost.js`.

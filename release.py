@@ -4,6 +4,7 @@
     ./release.py 1.1.0              # выпустить версию (коммит, тег v1.1.0, push)
     ./release.py 1.1.0 --dry-run    # показать, что будет сделано, ничего не менять
     ./release.py 1.1.0 --no-push    # коммит и тег локально, без push
+    ./release.py 1.1.0 --allow-unpushed  # осознанно запушить и накопившиеся неотправленные коммиты
     ./release.py --check            # проверить согласованность VERSION / CHANGELOG / тега
 
 Тег `latest` — подвижный: после каждого выпуска переносится на новую версию
@@ -109,6 +110,14 @@ def release(version, dry, push):
         sys.exit("Выпускать нужно с ветки main")
     if run("git", "status", "--porcelain", "--untracked-files=no"):
         sys.exit("Есть незакоммиченные изменения — закоммить или убери их перед выпуском")
+
+    tracked = run("git", "ls-files", ".claude", "CLAUDE.md")
+    if tracked:
+        sys.exit("В git отслеживаются локальные файлы Claude (не публикуются):\n%s\nУбери: git rm -r --cached .claude CLAUDE.md" % tracked)
+    ahead = run("git", "log", "--oneline", "origin/main..HEAD", check=False)
+    if push and ahead and "--allow-unpushed" not in sys.argv:
+        sys.exit("Есть неотправленные коммиты — release.py запушит их вместе с релизом:\n%s\n"
+                 "Если так и задумано — добавь --allow-unpushed; иначе сначала разберись с ними." % ahead)
 
     text = read(CHANGELOG)
     body = unreleased_body(text)
