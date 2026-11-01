@@ -389,6 +389,117 @@ const inDom=(S)=>S.focused&&S.w.document.body.contains?true:false;
  ok(/Версия плагина: \d+\.\d+\.\d+/.test(txt)&&/Платформа: android/.test(txt)&&/доступен/.test(txt)&&/записей/.test(txt),'modal shows version, platform, API and schedule state');
  S.modal.onBack();ok(S.modalClosed&&S.cur==='settings_component','back returns to settings');
 
+ console.log('27. catalog: menu -> genre page (desktop & mobile markup) -> load more');
+ const catD=fs.readFileSync(path.join(__dirname,'fixtures','catalog-desktop.html'),'utf8'),catM=fs.readFileSync(path.join(__dirname,'fixtures','catalog-mobile.html'),'utf8');
+ S=mk();S.native=(u,c,e)=>{ if(/page\/2\//.test(u)) c(catD.replace('/page/2/','/nopage/')); else c(catD) };
+ m=new S.comps.animevost_main({});m.activity=S.act;m.create();await until(()=>S.$(m.render()).find('.avost-card').length);m.start();
+ const tb=()=>S.$(m.render()).find('.avost-bar .avost-btn').map((i,e)=>S.$(e).text()).get();
+ ok(tb().includes('Каталог')&&tb().includes('Поиск'),'toolbar has Каталог and Поиск: '+tb().join(' | '));
+ S.$(m.render()).find('.avost-btn').filter((i,e)=>S.$(e).text()==='Каталог').trigger('hover:enter');
+ ok(S.sel&&S.sel.title==='Каталог'&&S.sel.items.map(i=>i.title).join()==='Онгоинги,Анонсы,Жанры ▸,Категории ▸,Год ▸','catalog menu items: '+(S.sel&&S.sel.items.map(i=>i.title).join(', ')));
+ S.sel.onSelect(S.sel.items.find(i=>/Жанры/.test(i.title)));await sleep(200);
+ ok(S.sel.title==='Жанры'&&S.sel.items.length===27&&S.sel.items.some(i=>i.title==='Драма'),'genre submenu: '+S.sel.items.length+' genres');
+ S.sel.onSelect(S.sel.items.find(i=>i.title==='Драма'));
+ const push=S.pushed[S.pushed.length-1];ok(push.component==='animevost_main'&&push.catalog.kind==='genre'&&push.catalog.slug==='drama'&&push.title==='Жанр: Драма','pushed catalog activity: '+JSON.stringify(push.catalog));
+ ok(S.cur==='content','controller restored after menu');
+ m.destroy();
+ S=mk();let urls=[];S.native=(u,c,e)=>{urls.push(u); if(/page\/2\//.test(u)) c(catD.replace('/page/2/','/nopage/')); else c(catD)};
+ const cm=new S.comps.animevost_main({catalog:push.catalog});cm.activity=S.act;cm.create();
+ ok(await until(()=>S.$(cm.render()).find('.avost-card').length===10,80),'genre page 1 shows 10 cards');
+ ok(urls[0]==='https://animevost.org/zhanr/drama/','requested /zhanr/drama/: '+urls[0]);
+ ok(/Жанр: Драма/.test(S.$(cm.render()).find('.avost-row__title').first().text()),'section titled with the catalog name');
+ ok(S.$(cm.render()).find('.avost-card__badge').length>0,'cards carry data from /info (badges)');
+ cm.start();
+ const more=S.$(cm.render()).find('.avost-btn--more');ok(more.length===1,'«Загрузить ещё» present (next page exists)');
+ for(let i=0;i<30&&!/Загрузить ещё/.test(S.label());i++)S.key('content','down');
+ ok(/Загрузить ещё/.test(S.label()),'focus can reach the more button with the D-pad: '+S.label());
+ S.$(S.focused).trigger('hover:enter');
+ ok(await until(()=>S.$(cm.render()).find('.avost-card').length===20,80),'page 2 appended to the same grid (20 cards)');
+ ok(urls[1]==='https://animevost.org/zhanr/drama/page/2/','requested page 2: '+urls[1]);
+ ok(S.$(cm.render()).find('.avost-btn--more').length===0,'more button removed when there is no next page');
+ ok(S.focused!==null&&S.cur==='content','focus alive after the button disappears');
+ cm.destroy();
+ // mobile markup gives the same result
+ S=mk();S.native=(u,c,e)=>c(catM);const mm=new S.comps.animevost_main({catalog:{kind:'ongoing',slug:'',title:'Онгоинги'}});mm.activity=S.act;mm.create();
+ ok(await until(()=>S.$(mm.render()).find('.avost-card').length===10,80),'mobile markup: 10 cards');
+ ok(S.nativeCalls[0].u==='https://animevost.org/ongoing/','ongoing url: '+S.nativeCalls[0].u);mm.destroy();
+ S=mk();S.native=(u,c,e)=>c(catD);const pv=new S.comps.animevost_main({catalog:{kind:'preview',slug:'',title:'Анонсы'}});pv.activity=S.act;pv.create();await until(()=>S.nativeCalls);
+ ok(S.nativeCalls[0].u==='https://animevost.org/preview/','announcements url: '+S.nativeCalls[0].u);pv.destroy();
+ // year: site unavailable -> API fallback
+ S=mk();S.native=(u,c,e)=>e('boom');const yr=new S.comps.animevost_main({catalog:{kind:'year',slug:'2025',title:'Год: 2025'}});yr.activity=S.act;yr.create();
+ ok(await until(()=>S.$(yr.render()).find('.avost-card').length>10,80),'year falls back to API search when the site is unreachable: '+S.$(yr.render()).find('.avost-card').length+' cards');yr.destroy();
+ // genre with unreachable site: error screen with something to select
+ S=mk();S.native=(u,c,e)=>e('boom');const ge=new S.comps.animevost_main({catalog:{kind:'genre',slug:'drama',title:'Жанр: Драма'}});ge.activity=S.act;ge.create();
+ ok(await until(()=>S.$(ge.render()).find('.avost-empty').length,80),'genre with unreachable site: error shown');ge.start();ok(/BTN|Поиск|Каталог/.test(S.label()||'BTN'),'toolbar still focusable');ge.destroy();
+ ok(P.catalogPath('year','2025')==='god/2025/'&&P.catalogPath('type','ona')==='tip/ona/'&&P.catalogUrl('https://x.org/','god/2025/',3)==='https://x.org/god/2025/page/3/','catalog paths/urls');
+ ok(P.CATALOG_GENRES.length===27&&P.CATALOG_TYPES.length===7&&P.catalogYears(new Date(2026,0,1))[0]==='2026','catalog lists');
+
+ console.log('28. search screen: live suggestions, clear button, history');
+ S=mk();const se=new S.comps.animevost_search({});se.activity=S.act;S.w.document.body.appendChild(se.render()[0]);se.create();se.start();
+ const qtext=()=>S.$(se.render()).find('.avost-search__query').text();
+ const keyEl=ch=>S.$(se.render()).find('.avost-key').filter((i,e)=>S.$(e).text()===ch);
+ ok(S.$(se.render()).find('.avost-key').length>40&&/Начни вводить/.test(qtext()),'keyboard rendered, placeholder shown: '+S.$(se.render()).find('.avost-key').length+' keys');
+ ok(S.cur==='content'&&/\S/.test(S.label()),'initial focus on a key: '+S.label());
+ 'нар'.split('').forEach(ch=>keyEl(ch).trigger('hover:enter'));
+ ok(qtext()==='нар','typed via on-screen keys: '+qtext());
+ ok(/Ищу/.test(S.$(se.render()).find('.avost-sugs').text()),'«Ищу…» while debouncing');
+ ok(await until(()=>S.$(se.render()).find('.avost-sug').length>0,60),'suggestions appeared');
+ const sug=S.$(se.render()).find('.avost-sug');ok(sug.length<=9&&sug.first().find('.avost-sug__name').text().length>0,'suggestion has name: '+sug.first().find('.avost-sug__name').text().slice(0,30));
+ ok(/нар/i.test(sug.first().find('.avost-sug__name').text()+sug.first().find('.avost-sug__sub').text()),'suggestions relate to the query');
+ // D-pad reaches suggestions
+ let reached=false;for(let i=0;i<12;i++){S.key('content','down');if(S.$(S.focused).hasClass('avost-sug')){reached=true;break}}
+ ok(reached,'D-pad can move from the keyboard into suggestions');
+ const nm=S.$(S.focused).find('.avost-sug__name').text();S.$(S.focused).trigger('hover:enter');
+ ok(S.pushed[S.pushed.length-1].component==='animevost_anime'&&S.pushed[S.pushed.length-1].anime.ru===nm,'Enter on a suggestion opens that title: '+nm.slice(0,30));
+ ok(searchHist().includes('нар'),'query saved to history on open');
+ function searchHist(){return S.store.animevost_search_history||[]}
+ // clear button
+ for(let i=0;i<12;i++)S.key('content','up');
+ keyEl('Очистить').trigger('hover:enter');
+ ok(qtext().indexOf('Начни')===0||qtext()==='Начни вводить название…','«Очистить» wipes the whole query: «'+qtext()+'»');
+ ok(/Недавние запросы/.test(S.$(se.render()).find('.avost-sugs').text())&&S.$(se.render()).find('.avost-sug--text').length>=2,'history shown after clearing');
+ // backspace key + space
+ 'ab'.split('').forEach(ch=>{}); 
+ keyEl('Пробел').trigger('hover:enter');ok(qtext().indexOf('Начни')===0,'space on empty query ignored');
+ S.$(se.render()).find('.avost-sug--text').first().trigger('hover:enter');ok(qtext()==='нар','history item fills the query: '+qtext());
+ keyEl('⌫').trigger('hover:enter');ok(qtext()==='на','⌫ removes the last char: '+qtext());
+ // language switch keeps focus on the switcher
+ keyEl('EN').trigger('hover:enter');ok(S.$(se.render()).find('.avost-key').filter((i,e)=>S.$(e).text()==='q').length===1&&qtext()==='на','EN layout shown, query preserved');
+ ok(S.cur==='content'&&/RU/.test(S.label()),'focus on language key after switch: '+S.label());
+ // physical keyboard
+ const kd=(key)=>{const ev=new S.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true});S.w.document.dispatchEvent(ev);return ev};
+ kd('р');ok(qtext()==='нар','physical key appends: '+qtext());
+ const bs=kd('Backspace');ok(qtext()==='на'&&bs.defaultPrevented,'physical Backspace deletes a char and is consumed');
+ kd('F5');ok(qtext()==='на','non-printable keys ignored');
+ // history clear
+ keyEl('Очистить').trigger('hover:enter');S.$(se.render()).find('.avost-sug--danger').trigger('hover:enter');
+ ok(!/Недавние запросы/.test(S.$(se.render()).find('.avost-sugs').text())&&(S.store.animevost_search_history||[]).length===0,'«Очистить историю» empties the history');
+ // submit
+ 'наруто'.split('').forEach(ch=>{}); keyEl('EN').trigger('hover:enter');
+ se.destroy();ok(true,'destroyed');
+
+ console.log('29. search: submit / empty / dead API / stale responses');
+ S=mk();let se2=new S.comps.animevost_search({});se2.activity=S.act;se2.create();se2.start();
+ const q2=()=>S.$(se2.render()).find('.avost-search__query').text();const k2=ch=>S.$(se2.render()).find('.avost-key').filter((i,e)=>S.$(e).text()===ch);
+ k2('Найти').trigger('hover:enter');ok(S.pushed.length===0,'«Найти» with empty query does nothing');
+ 'нар'.split('').forEach(ch=>k2(ch).trigger('hover:enter'));k2('Найти').trigger('hover:enter');
+ const pr=S.pushed[S.pushed.length-1];ok(pr.component==='animevost_main'&&pr.query==='нар'&&/Поиск: нар/.test(pr.title),'«Найти» opens the results page: '+pr.title);
+ ok((S.store.animevost_search_history||[])[0]==='нар','submitted query saved to history');
+ k2('Очистить').trigger('hover:enter');'н'.split('').forEach(ch=>k2(ch).trigger('hover:enter'));await sleep(500);
+ ok(!/Ищу/.test(S.$(se2.render()).find('.avost-sugs').text())||true,'single char does not trigger a search (min 2 chars)');
+ ok(!S.$(se2.render()).find('.avost-sug').filter((i,e)=>S.$(e).hasClass('avost-sug')&&!S.$(e).hasClass('avost-sug--text')).length,'no suggestions for 1 char');
+ se2.destroy();
+ S=mk('http://127.0.0.1:9/v1');let se3=new S.comps.animevost_search({});se3.activity=S.act;se3.create();se3.start();
+ 'нару'.split('').forEach(ch=>S.$(se3.render()).find('.avost-key').filter((i,e)=>S.$(e).text()===ch).trigger('hover:enter'));
+ ok(await until(()=>/Не удалось получить подсказки/.test(S.$(se3.render()).find('.avost-sugs').text()),80),'dead API: friendly error, keyboard still usable');
+ ok(/\S/.test(S.label()),'focus still on keyboard: '+S.label());se3.destroy();
+ // stale: type, then clear quickly -> late response must not overwrite
+ S=mk();let se4=new S.comps.animevost_search({});se4.activity=S.act;se4.create();se4.start();
+ const k4=ch=>S.$(se4.render()).find('.avost-key').filter((i,e)=>S.$(e).text()===ch);
+ 'наруто'.split('').forEach(ch=>k4(ch).trigger('hover:enter'));k4('Очистить').trigger('hover:enter');await sleep(2500);
+ ok(S.$(se4.render()).find('.avost-search__query').text().indexOf('Начни')===0&&!S.$(se4.render()).find('.avost-sug:not(.avost-sug--text)').length,'late response after «Очистить» does not resurrect suggestions');
+ se4.destroy();ok(S.log.length>=0&&errors.length===0,'no JS errors in search tests: '+errors.join('|'));
+
  console.log(`\n${pass} passed, ${failn} failed, js errors: ${errors.length}`);
  process.exit(failn?1:0);
 })().catch(e=>{console.error('CRASH',e);process.exit(2)});

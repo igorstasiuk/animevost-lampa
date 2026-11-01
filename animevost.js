@@ -240,6 +240,62 @@
         });
     }
 
+    // ----- Каталог сайта: жанры, категории, годы, онгоинги, анонсы -----
+    // Разделы сайта (DLE). Слаги — из меню animevost.org; список жанров совпадает с /v1/genres.
+    var CATALOG_GENRES = [
+        ['boyevyye-iskusstva', 'Боевые искусства'], ['voyna', 'Война'], ['drama', 'Драма'], ['detektiv', 'Детектив'],
+        ['istoriya', 'История'], ['komediya', 'Комедия'], ['mekha', 'Меха'], ['mistika', 'Мистика'],
+        ['makho-sedze', 'Махо-сёдзё'], ['muzykalnyy', 'Музыкальный'], ['povsednevnost', 'Повседневность'],
+        ['priklyucheniya', 'Приключения'], ['parodiya', 'Пародия'], ['romantika', 'Романтика'], ['senen', 'Сёнэн'],
+        ['sedze', 'Сёдзё'], ['sport', 'Спорт'], ['skazka', 'Сказка'], ['sedze-ay', 'Сёдзё-ай'], ['senen-ay', 'Сёнэн-ай'],
+        ['samurai', 'Самураи'], ['triller', 'Триллер'], ['uzhasy', 'Ужасы'], ['fantastika', 'Фантастика'],
+        ['fentezi', 'Фэнтези'], ['shkola', 'Школа'], ['etti', 'Этти']
+    ];
+    var CATALOG_TYPES = [
+        ['tv', 'ТВ'], ['tv-speshl', 'ТВ-спэшл'], ['ova', 'OVA'], ['ona', 'ONA'],
+        ['polnometrazhnyy-film', 'Полнометражный фильм'], ['korotkometrazhnyy-film', 'Короткометражный фильм'], ['dunkhua', 'Дунхуа']
+    ];
+
+    function catalogYears(now) {
+        var y = (now || new Date()).getFullYear(), out = [];
+        for (; y >= 1991; y--) out.push(String(y));
+        return out.concat(['1984', '1980', '1977', '1971']);
+    }
+
+    // Путь раздела каталога: kind = ongoing | preview | genre | type | year
+    function catalogPath(kind, slug) {
+        if (kind === 'ongoing') return 'ongoing/';
+        if (kind === 'preview') return 'preview/';
+        if (kind === 'genre') return 'zhanr/' + slug + '/';
+        if (kind === 'type') return 'tip/' + slug + '/';
+        if (kind === 'year') return 'god/' + slug + '/';
+        return '';
+    }
+
+    function catalogUrl(site, path, page) {
+        return site.replace(/\/+$/, '') + '/' + path + (page > 1 ? 'page/' + page + '/' : '');
+    }
+
+    // id тайтлов со страницы каталога. Десктопная и мобильная вёрстки сайта разные (разметка зависит от User-Agent),
+    // поэтому два шаблона; сайдбары не попадают — берём только блоки записей. Порядок как на странице, без повторов.
+    function parseCatalogIds(html) {
+        var found = [], seen = {};
+        var patterns = [
+            /<div class="shortstory">\s*<div class="shortstoryHead">\s*<h2>\s*<a href="[^"]*?\/(\d+)-[^"]*"/g,
+            /<article class="post"[^>]*>\s*<span><a href="[^"]*?\/(\d+)-[^"]*"/g
+        ];
+        patterns.forEach(function (re) {
+            var m;
+            while ((m = re.exec(html || ''))) found.push({ at: m.index, id: m[1] });
+        });
+        found.sort(function (a, b) { return a.at - b.at; });
+        return found.map(function (f) { return f.id; }).filter(function (id) {
+            if (seen[id]) return false;
+            seen[id] = true;
+            return true;
+        });
+    }
+
     // Запрос для поиска карточки в Lampa/TMDB: английское название без номера сезона и года
     function lampaQuery(a) {
         var en = (a.en || '').split(':')[0]
@@ -257,7 +313,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { VERSION: VERSION, lampaQuery: lampaQuery, parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { parseCatalogIds: parseCatalogIds, catalogPath: catalogPath, catalogUrl: catalogUrl, catalogYears: catalogYears, CATALOG_GENRES: CATALOG_GENRES, CATALOG_TYPES: CATALOG_TYPES, VERSION: VERSION, lampaQuery: lampaQuery, parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -585,6 +641,44 @@
         loadSchedule(function (m) { sched = m; done(); }, function () { done(); }, force);
     }
 
+    // Страница каталога сайта (онгоинги, анонсы, жанр, категория, год): id берём со страницы сайта (она без CORS —
+    // на Android нативный запрос, в браузере через прокси), полные карточки — одним запросом /info по списку id.
+    // Результат кешируем в памяти на 10 минут. Для года при недоступном сайте — запасной вариант через API.
+    function loadCatalogPage(kind, slug, page, ok, fail) {
+        var site = '' + setting('animevost_site', 'https://animevost.org');
+        var url = catalogUrl(site, catalogPath(kind, slug), page);
+        var key = 'cat:' + url, hit = bigMem[key];
+        if (hit && Date.now() - hit.ts < 10 * 60000) return ok(hit.items, hit.more);
+
+        var withSchedule = function (items) {
+            var sc = getMap('animevost_schedule').map;
+            if (sc) items.forEach(function (a) { if (sc[a.id]) applySchedule(a, sc[a.id]); });
+            return items;
+        };
+        var done = function (items, more) {
+            bigMem[key] = { ts: Date.now(), items: items, more: more };
+            ok(items, more);
+        };
+
+        fetchText(url, function (html) {
+            var ids = parseCatalogIds(html);
+            if (!ids.length) return done([], false);
+            var more = html.indexOf('/page/' + (page + 1) + '/') >= 0;
+            request('/info', { id: ids.join(',') }, function (r) {
+                var byId = {};
+                (r.data || []).forEach(function (a) { byId[a.id] = parseAnime(a); });
+                done(withSchedule(ids.map(function (id) { return byId[id]; }).filter(Boolean)), more);
+            }, function () { fail('api'); });
+        }, function (e) {
+            if (kind === 'year' && page === 1) {
+                return request('/search', { year: slug }, function (r) {
+                    done((r.data || []).map(function (a) { return parseAnime(a); }), false);
+                }, function () { fail(e); });
+            }
+            fail(e);
+        });
+    }
+
     function searchAnime(query, ok, fail) {
         request('/search', { name: query }, function (r) {
             ok((r.data || []).map(function (a) { return parseAnime(a); }));
@@ -832,6 +926,21 @@
             '.avost-ep__bar div{height:100%;background:#e8590c}' +
             '.avost-ep__name{font-size:1.5em;margin-top:.5em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.avost-ep__sub{opacity:.65;margin-top:.15em;min-height:1.3em}' +
+            '.avost-more{padding:.4em 1.5em 1.5em;text-align:center}.avost-btn--more{display:inline-block}' +
+            '.avost-search{padding:0 1.5em}.avost-search__query{font-size:1.8em;padding:.5em .8em;margin-bottom:.8em;border-radius:.6em;background:rgba(255,255,255,.1);min-height:1.4em;word-wrap:break-word}' +
+            '.avost-search__placeholder{opacity:.45}' +
+            '.avost-keys__row{display:flex;flex-wrap:wrap;margin-bottom:.1em}' +
+            '.avost-key{min-width:2.3em;box-sizing:border-box;text-align:center;padding:.55em .6em;margin:0 .35em .35em 0;border-radius:.5em;background:rgba(255,255,255,.1);font-size:1.25em}' +
+            '.avost-key--wide{padding-left:1.1em;padding-right:1.1em}.avost-key--accent{background:#e8590c;color:#fff}' +
+            '.avost-key.focus{background:#fff;color:#000}' +
+            '.avost-sugs{padding:.8em 1.5em 2em}' +
+            '.avost-sug{display:flex;align-items:center;padding:.5em .7em;margin-bottom:.35em;border-radius:.6em;background:rgba(255,255,255,.06)}' +
+            '.avost-sug.focus{background:#fff;color:#000}' +
+            '.avost-sug--text{font-size:1.2em;padding:.7em .9em}.avost-sug--danger{color:#ff8787}.avost-sug--accent{color:#ffa94d}' +
+            '.avost-sug.focus.avost-sug--danger,.avost-sug.focus.avost-sug--accent{color:#000}' +
+            '.avost-sug__img{width:3.4em;height:4.8em;border-radius:.4em;overflow:hidden;background:#2a2a2a;flex-shrink:0;margin-right:1em}' +
+            '.avost-sug__img img{width:100%;height:100%;object-fit:cover}' +
+            '.avost-sug__info{min-width:0;flex:1}.avost-sug__name{font-size:1.25em;line-height:1.25}.avost-sug__sub{opacity:.6;margin-top:.2em;word-wrap:break-word}' +
             '.avost-empty{padding:3em 1.5em;font-size:1.3em;opacity:.7}' +
             '@media (max-width:1100px){.avost-ep{width:20em}.avost-ep__img{height:11.2em}}' +
             '@media (max-width:760px){.avost-anime{flex-direction:column;padding:1em}.avost-anime__poster{width:9em;margin:0 0 1em 0}' +
@@ -954,6 +1063,285 @@
     }
 
     /* ------------------------------------------------------------------ */
+    /*  Каталог (меню) и экран поиска с подсказками                       */
+    /* ------------------------------------------------------------------ */
+
+    function openCatalog(kind, slug, title) {
+        Lampa.Activity.push({ url: '', title: title, component: 'animevost_main', catalog: { kind: kind, slug: slug, title: title }, page: 1 });
+    }
+
+    // Меню как на сайте: Онгоинги, Анонсы, Жанры, Категории, Год. Второй уровень — отдельным списком.
+    function openCatalogMenu() {
+        var back = function () { Lampa.Controller.toggle('content'); };
+        var sub = function (title, list, kind, prefix) {
+            setTimeout(function () { // дать первому списку закрыться
+                Lampa.Select.show({
+                    title: title,
+                    items: list.map(function (g) { return { title: g[1], value: g }; }),
+                    onSelect: function (it) {
+                        back();
+                        openCatalog(kind, it.value[0], prefix + it.value[1]);
+                    },
+                    onBack: back
+                });
+            }, 80);
+        };
+        Lampa.Select.show({
+            title: 'Каталог',
+            items: [
+                { title: 'Онгоинги', kind: 'ongoing' },
+                { title: 'Анонсы', kind: 'preview' },
+                { title: 'Жанры ▸', group: 'genre' },
+                { title: 'Категории ▸', group: 'type' },
+                { title: 'Год ▸', group: 'year' }
+            ],
+            onSelect: function (it) {
+                if (it.kind) {
+                    back();
+                    return openCatalog(it.kind, '', it.title);
+                }
+                if (it.group === 'genre') sub('Жанры', CATALOG_GENRES, 'genre', 'Жанр: ');
+                else if (it.group === 'type') sub('Категории', CATALOG_TYPES, 'type', 'Категория: ');
+                else sub('Год', catalogYears().map(function (y) { return [y, y]; }), 'year', 'Год: ');
+            },
+            onBack: back
+        });
+    }
+
+    // Экран поиска как на сайте: набираешь — под полем сразу подсказки (постер, название, год/тип).
+    // Своя экранная клавиатура (RU/EN) управляется пультом; на ПК работает и физическая клавиатура.
+    var SEARCH_KEYS = {
+        ru: ['1234567890', 'йцукенгшщзхъ', 'фывапролджэ', 'ячсмитьбю.-'],
+        en: ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm.-']
+    };
+    var SEARCH_MAX_SUGGEST = 8;
+
+    function searchHistory() {
+        var h = Lampa.Storage.get('animevost_search_history', '[]');
+        return Array.isArray(h) ? h : [];
+    }
+
+    function searchRemember(q) {
+        q = (q || '').trim();
+        if (!q) return;
+        var h = searchHistory().filter(function (x) { return x !== q; });
+        h.unshift(q);
+        Lampa.Storage.set('animevost_search_history', h.slice(0, 10));
+    }
+
+    // Подсказки: сначала названия, начинающиеся с запроса, потом содержащие
+    function rankSuggestions(list, q) {
+        q = q.toLowerCase();
+        var starts = [], rest = [];
+        list.forEach(function (a) {
+            ((a.ru || '').toLowerCase().indexOf(q) === 0 || (a.en || '').toLowerCase().indexOf(q) === 0 ? starts : rest).push(a);
+        });
+        return starts.concat(rest);
+    }
+
+    function SearchComponent(object) {
+        var self = this;
+        var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
+        var html = $('<div class="avost"></div>');
+        var grid = new Grid('content', scroll);
+        var query = '', lang = 'ru';
+        var destroyed = false, token = 0, timer = null, cache = {};
+        var head, display, sugBox, langKey, keyRows = [], sugRows = [];
+
+        scroll.minus();
+        html.append(scroll.render());
+
+        function render() {
+            display.text(query || 'Начни вводить название…').toggleClass('avost-search__placeholder', !query);
+        }
+
+        function setQuery(q) {
+            query = q;
+            render();
+            schedule();
+        }
+
+        function key(label, act, cls) {
+            var el = $('<div class="avost-key selector"></div>').text(label);
+            if (cls) el.addClass(cls);
+            el.on('hover:focus', function () { grid.track(el); scroll.update(head, false); });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
+            el.on('hover:enter', act);
+            return el;
+        }
+
+        function submit() {
+            var q = query.trim();
+            if (!q) return;
+            searchRemember(q);
+            Lampa.Activity.push({ url: '', title: 'Поиск: ' + q, component: 'animevost_main', query: q, page: 1 });
+        }
+
+        function buildKeyboard() {
+            var kb = $('<div class="avost-keys"></div>');
+            keyRows = [];
+            var layout = SEARCH_KEYS[lang];
+            layout.forEach(function (chars) {
+                var line = $('<div class="avost-keys__row"></div>'), els = [];
+                chars.split('').forEach(function (ch) {
+                    var el = key(ch, function () { setQuery(query + ch); });
+                    line.append(el);
+                    els.push(el);
+                });
+                kb.append(line);
+                keyRows.push(els);
+            });
+            var actions = $('<div class="avost-keys__row"></div>'), act = [];
+            var add = function (label, fn, cls) { var el = key(label, fn, cls); actions.append(el); act.push(el); return el; };
+            add('Пробел', function () { if (query && query.slice(-1) !== ' ') setQuery(query + ' '); }, 'avost-key--wide');
+            add('⌫', function () { setQuery(query.slice(0, -1)); });
+            add('Очистить', function () { setQuery(''); }, 'avost-key--wide');
+            langKey = add(lang === 'ru' ? 'EN' : 'RU', function () {
+                lang = lang === 'ru' ? 'en' : 'ru';
+                buildAll(true);
+            });
+            add('Найти', submit, 'avost-key--wide avost-key--accent');
+            kb.append(actions);
+            keyRows.push(act);
+            return kb;
+        }
+
+        function sugItem(a) {
+            var el = $('<div class="avost-sug selector">' +
+                '<div class="avost-sug__img"><img alt=""/></div>' +
+                '<div class="avost-sug__info"><div class="avost-sug__name"></div><div class="avost-sug__sub"></div></div></div>');
+            el.find('.avost-sug__name').text(a.ru);
+            el.find('.avost-sug__sub').text([a.en, a.year, a.type].filter(Boolean).join(' · '));
+            setImage(el.find('img'), a.poster, function () { el.find('img').hide(); });
+            el.on('hover:focus', function () { grid.track(el); scroll.update(el, false); });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
+            el.on('hover:enter', function () {
+                searchRemember(query);
+                openAnime(a);
+            });
+            return el;
+        }
+
+        function textItem(label, act, cls) {
+            var el = $('<div class="avost-sug avost-sug--text selector"></div>').text(label);
+            if (cls) el.addClass(cls);
+            el.on('hover:focus', function () { grid.track(el); scroll.update(el, false); });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
+            el.on('hover:enter', act);
+            return el;
+        }
+
+        // Подсказки под клавиатурой; при пустом запросе — недавние запросы
+        function showSuggestions(list, state) {
+            sugBox.empty();
+            sugRows = [];
+            var add = function (el) { sugBox.append(el); sugRows.push([el]); };
+            var q = query.trim();
+
+            if (!q) {
+                var h = searchHistory();
+                if (h.length) {
+                    sugBox.append($('<div class="avost-row__title">Недавние запросы</div>'));
+                    h.forEach(function (w) { add(textItem(w, function () { setQuery(w); })); });
+                    add(textItem('Очистить историю', function () {
+                        Lampa.Storage.set('animevost_search_history', []);
+                        showSuggestions([], '');
+                    }, 'avost-sug--danger'));
+                }
+            } else if (state === 'loading') {
+                sugBox.append($('<div class="avost-empty">Ищу…</div>'));
+            } else if (state === 'error') {
+                sugBox.append($('<div class="avost-empty">Не удалось получить подсказки. Проверьте сеть.</div>'));
+            } else if (!list.length) {
+                sugBox.append($('<div class="avost-empty">Ничего не найдено</div>'));
+            } else {
+                sugBox.append($('<div class="avost-row__title">Подсказки</div>'));
+                list.slice(0, SEARCH_MAX_SUGGEST).forEach(function (a) { add(sugItem(a)); });
+                if (list.length > SEARCH_MAX_SUGGEST) add(textItem('Все результаты (' + list.length + ')', submit, 'avost-sug--accent'));
+            }
+            grid.set(keyRows.concat(sugRows), true);
+        }
+
+        function schedule() {
+            clearTimeout(timer);
+            var q = query.trim();
+            if (q.length < 2) {
+                token++;
+                return showSuggestions([], '');
+            }
+            if (cache[q]) return showSuggestions(cache[q], 'ok');
+            showSuggestions([], 'loading');
+            var mine = ++token;
+            timer = setTimeout(function () {
+                searchAnime(q, function (list) {
+                    var ranked = rankSuggestions(list, q);
+                    cache[q] = ranked;
+                    if (destroyed || mine !== token) return;
+                    showSuggestions(ranked, 'ok');
+                }, function () {
+                    if (destroyed || mine !== token) return;
+                    showSuggestions([], 'error');
+                });
+            }, 300);
+        }
+
+        function buildAll(keepFocus) {
+            scroll.clear();
+            head = $('<div class="avost-search"></div>');
+            display = $('<div class="avost-search__query"></div>');
+            head.append(display).append(buildKeyboard());
+            sugBox = $('<div class="avost-sugs"></div>');
+            scroll.append(head);
+            scroll.append(sugBox);
+            render();
+            showSuggestions([], '');
+            if (query.trim().length >= 2) schedule();
+            if (!keepFocus) grid.at(1, 0);
+            else grid.at(keyRows.length - 1, 3); // после смены раскладки фокус остаётся на переключателе языка
+            if (keepFocus) Lampa.Controller.toggle('content');
+        }
+
+        // Физическая клавиатура (ПК/Mac): печатные символы дописываются в запрос, Backspace стирает символ
+        function onKey(e) {
+            if (destroyed || !Lampa.Activity.active() || Lampa.Activity.active().activity !== self.activity) return;
+            if (Lampa.Controller.enabled().name !== 'content') return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (e.key === 'Backspace' && query) {
+                e.preventDefault();
+                e.stopPropagation(); // иначе Lampa воспримет как «Назад»
+                return setQuery(query.slice(0, -1));
+            }
+            if (e.key && e.key.length === 1 && /[0-9a-zа-яё.\- ]/i.test(e.key)) {
+                e.preventDefault();
+                setQuery(query + e.key.toLowerCase());
+            }
+        }
+
+        this.create = function () {
+            document.addEventListener('keydown', onKey, true);
+            buildAll(false);
+            self.activity.loader(false);
+            self.activity.toggle();
+        };
+
+        this.start = function () {
+            if (Lampa.Activity.active().activity !== this.activity) return;
+            grid.bind();
+        };
+
+        this.pause = function () {};
+        this.stop = function () {};
+        this.render = function () { return html; };
+        this.destroy = function () {
+            destroyed = true;
+            clearTimeout(timer);
+            document.removeEventListener('keydown', onKey, true);
+            scroll.destroy();
+            html.remove();
+        };
+    }
+
+    /* ------------------------------------------------------------------ */
     /*  Component: дашборд / поиск                                        */
     /* ------------------------------------------------------------------ */
 
@@ -967,6 +1355,8 @@
         var bar;
         var destroyed = false, token = 0;
         var lastGroups = null, builtSig = '';
+        // каталог: текущая страница, есть ли следующая, кнопка «Загрузить ещё», последняя сетка (куда дописываем карточки)
+        var catPage = 1, catMore = false, catBusy = false, moreBtn = null, lastBox = null, lastItems = null;
         // дашборд: вся зона видимости + 2 экрана запаса, остальные постеры фоном (по 4 за тик) — грузятся все
         var lazy = new Lazy({ margin: 2, trickle: 4 });
 
@@ -985,6 +1375,24 @@
             return el;
         }
 
+        // Карточка со всеми обработчиками (фокус, мышь/касание, открытие, долгое нажатие)
+        function cardNode(a, badge, opts) {
+            opts = opts || {};
+            var el = card(a, badge, opts.pct && opts.pct(a));
+            el.on('hover:focus', function () {
+                grid.track(el);
+                scroll.update(el, false);
+                setTimeout(function () { lazy.check(); }, 60); // после сдвига скролла подгружаем картинки рядом
+            });
+            if (opts.onLong) {
+                el.on('hover:long', function () { opts.onLong(a); });
+                el.on('contextmenu', function (e) { e.preventDefault(); opts.onLong(a); });
+            }
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
+            el.on('hover:enter', function () { openAnime(a); });
+            return el;
+        }
+
         // Секция — адаптивная сетка с переносом строк: число колонок зависит от ширины экрана
         function row(title, list, badgeFn, opts) {
             opts = opts || {};
@@ -994,24 +1402,15 @@
             wrap.find('.avost-row__title').text(title).toggle(!!title);
 
             list.forEach(function (a) {
-                var el = card(a, badgeFn && badgeFn(a), opts.pct && opts.pct(a));
-                el.on('hover:focus', function () {
-                    grid.track(el);
-                    scroll.update(el, false);
-                    setTimeout(function () { lazy.check(); }, 60); // после сдвига скролла подгружаем картинки рядом
-                });
-                if (opts.onLong) {
-                    el.on('hover:long', function () { opts.onLong(a); });
-                    el.on('contextmenu', function (e) { e.preventDefault(); opts.onLong(a); });
-                }
-                el.on('hover:hover hover:touch', function () { grid.track(el); });
-                el.on('hover:enter', function () { openAnime(a); });
+                var el = cardNode(a, badgeFn && badgeFn(a), opts);
                 box.append(el);
                 items.push(el);
             });
 
             scroll.append(wrap);
             sections.push(items);
+            lastBox = box;
+            lastItems = items;
         }
 
         // Визуальные ряды секций: карточки с одинаковым offsetTop лежат в одной строке
@@ -1027,6 +1426,7 @@
                 tops.sort(function (x, y) { return x - y; });
                 tops.forEach(function (t) { out.push(byTop[t]); });
             });
+            if (moreBtn && catMore) out.push([moreBtn]);
             return out;
         }
 
@@ -1043,11 +1443,9 @@
             bar = $('<div class="avost-bar"></div>');
             btns = [];
             btns.push(button('Поиск', function () {
-                Lampa.Input.edit({ free: true, title: 'Поиск аниме', nosave: true, value: '' }, function (value) {
-                    if (value) Lampa.Activity.push({ url: '', title: 'Поиск: ' + value, component: 'animevost_main', query: value, page: 1 });
-                    else Lampa.Controller.toggle('content');
-                });
+                Lampa.Activity.push({ url: '', title: 'Поиск', component: 'animevost_search', page: 1 });
             }));
+            btns.push(button('Каталог', openCatalogMenu));
             if (!object.query) {
                 btns.push(button('Обновить', function () { self.reload(true); }));
             }
@@ -1100,7 +1498,7 @@
             sections = [];
             toolbar();
 
-            if (!object.query) {
+            if (!object.query && !object.catalog) {
                 var hist = history();
                 if (hist.length) {
                     var byId = {};
@@ -1119,7 +1517,42 @@
                 scroll.append($('<div class="avost-empty">Ничего не найдено</div>'));
             }
             groups.forEach(function (g) { row(g.title, g.items); });
+            if (object.catalog && catMore) addMoreButton();
             finish();
+        }
+
+        // «Загрузить ещё»: дописывает карточки следующей страницы каталога в ту же сетку
+        function addMoreButton() {
+            moreBtn = $('<div class="avost-btn avost-btn--more selector">Загрузить ещё</div>');
+            moreBtn.on('hover:focus', function () { grid.track(moreBtn); scroll.update(moreBtn, false); });
+            moreBtn.on('hover:hover hover:touch', function () { grid.track(moreBtn); });
+            moreBtn.on('hover:enter', loadMore);
+            scroll.append($('<div class="avost-more"></div>').append(moreBtn));
+        }
+
+        function loadMore() {
+            if (catBusy || !catMore) return;
+            catBusy = true;
+            moreBtn.text('Загружаю…');
+            var mine = token, next = catPage + 1;
+            var c = object.catalog;
+            loadCatalogPage(c.kind, c.slug, next, function (items, more) {
+                catBusy = false;
+                if (destroyed || mine !== token) return;
+                items.forEach(function (a) {
+                    var el = cardNode(a);
+                    lastBox.append(el);
+                    lastItems.push(el);
+                });
+                catPage = next;
+                catMore = more;
+                if (more) moreBtn.text('Загрузить ещё');
+                else { moreBtn.parent().remove(); moreBtn = null; }
+                setTimeout(function () { lazy.check(); }, 100);
+            }, function () {
+                catBusy = false;
+                if (!destroyed) moreBtn.text('Не удалось загрузить — повторить');
+            });
         }
 
         function fail() {
@@ -1138,6 +1571,16 @@
                 searchAnime(object.query, function (list) {
                     if (!alive()) return;
                     build([{ title: 'Найдено: ' + list.length, items: list }]);
+                }, function () { if (alive()) fail(); });
+            } else if (object.catalog) {
+                var c = object.catalog;
+                moreBtn = null;
+                catBusy = false;
+                loadCatalogPage(c.kind, c.slug, 1, function (items, more) {
+                    if (!alive()) return;
+                    catPage = 1;
+                    catMore = more;
+                    build([{ title: c.title + (items.length ? '' : ' — пусто'), items: items }]);
                 }, function () { if (alive()) fail(); });
             } else {
                 loadDashboard(function (list) {
@@ -1891,6 +2334,7 @@
         hookPlayer();
         Lampa.Component.add('animevost_main', MainComponent);
         Lampa.Component.add('animevost_anime', AnimeComponent);
+        Lampa.Component.add('animevost_search', SearchComponent);
         addSettings();
         addMenu();
         try { addGlobalSearch(); } catch (e) { console.log('AnimeVost', 'global search unavailable', e); }
