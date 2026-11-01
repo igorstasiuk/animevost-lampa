@@ -48,6 +48,8 @@
             nextDate: null,
             airAt: 0,
             airExact: false,
+            airTime: '',
+            airMin: -1,
             day: -1,
             ongoing: false
         };
@@ -97,14 +99,68 @@
         });
 
         var sections = [];
+        var byTime = function (x, y) {
+            var a = x.airMin >= 0 ? x.airMin : 9999, b = y.airMin >= 0 ? y.airMin : 9999;
+            return a - b;
+        };
         for (var i = 0; i < 7; i++) {
             var idx = (today + i) % 7;
             if (!buckets[idx].length) continue;
+            buckets[idx].sort(byTime);
             var prefix = i === 0 ? 'Сегодня · ' : i === 1 ? 'Завтра · ' : '';
             sections.push({ title: prefix + DAYS[idx], items: buckets[idx] });
         }
         if (undated.length) sections.push({ title: 'Без даты выхода', items: undated });
         return sections;
+    }
+
+    // Расписание с главной animevost.org: блоки raspisMon..raspisSun, в ссылках id тайтла и время (МСК)
+    var SITE_DAYS = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+
+    function parseSchedule(html) {
+        var map = {}, count = 0;
+        var re = /id=["']raspis(Mon|Tue|Wed|Thu|Fri|Sat|Sun)["'][^>]*>([\s\S]*?)<\/div>/g, m;
+        while ((m = re.exec(html || ''))) {
+            var day = SITE_DAYS[m[1]];
+            var link = /href=["'][^"']*?\/(\d+)-[^"']*["'][^>]*>([^<]*?)\s*~\s*\(([^)]*)\)/g, l;
+            while ((l = link.exec(m[2]))) {
+                var t = l[3].match(/(\d{1,2}):(\d{2})/);
+                map[l[1]] = { day: day, time: t ? t[1].replace(/^(\d)$/, '0$1') + ':' + t[2] : '', min: t ? parseInt(t[1], 10) * 60 + parseInt(t[2], 10) : -1 };
+                count++;
+            }
+        }
+        return count ? map : null;
+    }
+
+    // Ближайший выход по расписанию (время на сайте — московское, UTC+3)
+    function nextAiring(entry, now) {
+        var MSK = 3 * 3600000;
+        var base = new Date(now + MSK);
+        for (var d = 0; d < 8; d++) {
+            var day = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + d));
+            if ((day.getUTCDay() + 6) % 7 !== entry.day) continue;
+            var minutes = entry.min >= 0 ? entry.min : 23 * 60 + 59;
+            var at = day.getTime() + minutes * 60000 - MSK;
+            if (at > now) return at;
+        }
+        return 0;
+    }
+
+    function applySchedule(item, entry, now) {
+        if (!item || !entry) return item;
+        now = now || Date.now();
+        item.day = entry.day;
+        item.airTime = entry.time;
+        item.airMin = entry.min;
+        item.ongoing = true;
+        var at = nextAiring(entry, now);
+        if (at) {
+            item.airAt = at;
+            item.airExact = entry.min >= 0;
+            item.nextDate = new Date(at);
+        }
+        if (!item.nextEp && item.current) item.nextEp = (item.current + 1) + ' серия';
+        return item;
     }
 
     // Текст "до выхода следующей серии"; '' если выхода не ожидается
@@ -182,7 +238,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -307,6 +363,56 @@
         }
     }
 
+    // Страница сайта без CORS: на Android Lampa ходит нативным запросом, в браузере — через прокси из настроек
+    function fetchText(url, ok, fail) {
+        var proxy = ('' + setting('animevost_proxy', '')).trim();
+        var viaAjax = function () {
+            if (!proxy) return fail('cors');
+            $.ajax({ url: proxy + url, dataType: 'text', timeout: 20000, success: ok, error: function () { fail('proxy'); } });
+        };
+        try {
+            new Lampa.Reguest().native(url, function (str) {
+                typeof str === 'string' && str.length > 1000 ? ok(str) : viaAjax();
+            }, viaAjax, false, { dataType: 'text' });
+        } catch (e) { viaAjax(); }
+    }
+
+    function loadSchedule(ok, fail, force) {
+        var cache = getMap('animevost_schedule');
+        if (!force && cache.ts && Date.now() - cache.ts < 3 * 3600000 && cache.map) return ok(cache.map);
+        var site = ('' + setting('animevost_site', 'https://animevost.org')).replace(/\/+$/, '') + '/';
+        fetchText(site, function (html) {
+            var map = parseSchedule(html);
+            if (!map) return cache.map ? ok(cache.map) : fail('parse');
+            Lampa.Storage.set('animevost_schedule', { ts: Date.now(), map: map });
+            ok(map);
+        }, function (e) { cache.map ? ok(cache.map) : fail(e); });
+    }
+
+    // Дашборд = свежие обновления из API + официальное расписание сайта (если удалось получить).
+    // Тайтлы из расписания, которых нет среди последних обновлений, догружаются через /info.
+    function loadDashboard(ok, fail, force) {
+        var list = null, sched = null, left = 2;
+        function done() {
+            if (--left) return;
+            if (!list) return fail('empty');
+            if (!sched) return ok(list);
+            var have = {};
+            list.forEach(function (a) { have[a.id] = true; applySchedule(a, sched[a.id]); });
+            var missing = Object.keys(sched).filter(function (id) { return !have[id]; }).slice(0, 20);
+            if (!missing.length) return ok(list);
+            var pending = missing.length;
+            missing.forEach(function (id) {
+                request('/info', { id: id }, function (r) {
+                    if (r.data && r.data[0]) list.push(applySchedule(parseAnime(r.data[0]), sched[id]));
+                    if (!--pending) ok(list);
+                }, function () { if (!--pending) ok(list); });
+            });
+        }
+        loadOngoing(function (l) { list = l; done(); }, function () { done(); }, force);
+        loadSchedule(function (m) { sched = m; done(); }, function () { done(); }, force);
+    }
+
     function searchAnime(query, ok, fail) {
         request('/search', { name: query }, function (r) {
             ok((r.data || []).map(function (a) { return parseAnime(a); }));
@@ -347,7 +453,11 @@
         }
 
         request('/info', { id: id }, function (r) {
-            if (r.data && r.data[0]) info = parseAnime(r.data[0]);
+            if (r.data && r.data[0]) {
+                info = parseAnime(r.data[0]);
+                var sc = getMap('animevost_schedule').map;
+                if (sc) applySchedule(info, sc[info.id]);
+            }
             done();
         }, function () { errors++; done(); });
 
@@ -622,7 +732,7 @@
                 '<div class="avost-card__title"></div></div>');
             el.find('.avost-card__title').text(a.ru);
             setImage(el.find('img'), a.poster);
-            var b = badge || a.nextEp || (a.current ? a.current + '/' + (a.total || '?') + (a.plus ? '+' : '') : '');
+            var b = badge || (a.nextEp ? a.nextEp + (a.airTime ? ' · ' + a.airTime : '') : '') || (a.current ? a.current + '/' + (a.total || '?') + (a.plus ? '+' : '') : '');
             if (b) el.find('.avost-card__img').append($('<div class="avost-card__badge"></div>').text(b));
             return el;
         }
@@ -745,7 +855,7 @@
                     build([{ title: 'Найдено: ' + list.length, items: list }]);
                 }, fail);
             } else {
-                loadOngoing(function (list) { build(groupByDay(list)); }, fail, force);
+                loadDashboard(function (list) { build(groupByDay(list)); }, fail, force);
             }
         };
 
@@ -1053,6 +1163,11 @@
             component: 'animevost',
             param: { name: 'animevost_https', type: 'trigger', default: true },
             field: { name: 'Принудительно HTTPS для видео и картинок', description: 'Нужно, если Lampa открыта по https (иначе браузер блокирует http-видео)' }
+        });
+        Lampa.SettingsApi.addParam({
+            component: 'animevost',
+            param: { name: 'animevost_proxy', type: 'input', values: '', default: '' },
+            field: { name: 'CORS-прокси для расписания', description: 'Расписание берётся с главной animevost.org. На Android Lampa получает его сама; в браузере нужен прокси-префикс (например https://corsproxy.io/?). Без него расписание строится по заголовкам тайтлов' }
         });
         Lampa.SettingsApi.addParam({
             component: 'animevost',
