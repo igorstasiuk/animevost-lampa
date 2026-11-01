@@ -118,3 +118,14 @@ API `https://api.animevost.org/v1` (CORS открыт):
 ```
 
 Скрипт отказывается работать, если не на `main`, есть незакоммиченные изменения, версия не больше последнего тега или раздел `[Unreleased]` пуст.
+
+## Разработка
+
+```bash
+npm install                 # jsdom и jquery для тестов
+npm test                    # интеграционные тесты (jsdom + заглушка Lampa, нужен интернет)
+npm run check               # синтаксис + согласованность версии/ченджлога/тега
+sh tools/lampa-source.sh    # скачать бандл Lampa в .cache/ — эталон для проверки API
+```
+
+Правила и ограничения проекта — в [CLAUDE.md](CLAUDE.md). Для работы с Claude Code в папке `.claude/` лежат агенты (`lampa-api-checker`, `tv-nav-reviewer`, `plugin-qa`, `release-manager`), скиллы (`/add-feature`, `/release`, `/test-plugin`, `/lampa-source`), правила по путям файлов и хук, проверяющий синтаксис и ES5 после каждой правки `animevost.js`.

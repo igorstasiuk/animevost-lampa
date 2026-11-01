@@ -1,0 +1,15 @@
+{
+  "name": "animevost-lampa",
+  "private": true,
+  "description": "AnimeVost plugin for Lampa",
+  "scripts": {
+    "test": "node test/full.js",
+    "lint": "node --check animevost.js",
+    "check": "node --check animevost.js && python3 release.py --check",
+    "lampa:source": "sh tools/lampa-source.sh"
+  },
+  "devDependencies": {
+    "jquery": "^4.0.0",
+    "jsdom": "^30.1.3"
+  }
+}
