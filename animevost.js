@@ -239,6 +239,15 @@
         });
     }
 
+    // Запрос для поиска карточки в Lampa/TMDB: английское название без номера сезона и года
+    function lampaQuery(a) {
+        var en = (a.en || '').split(':')[0]
+            .replace(/\s*\(\d{4}\)\s*$/, '')
+            .replace(/\s+(\d+(st|nd|rd|th) season|season \d+|part \d+|\d+)$/i, '')
+            .replace(/\s+/g, ' ').trim();
+        return en || franchiseKey(a.ru) || a.ru || '';
+    }
+
     function fmtTime(sec) {
         sec = Math.max(0, Math.floor(sec || 0));
         var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
@@ -247,7 +256,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { lampaQuery: lampaQuery, parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -328,6 +337,36 @@
         return v && typeof v === 'object' ? v : {};
     }
 
+    // Тяжёлые кеши (списки серий, дашборд) кладём в IndexedDB через Lampa.Cache, чтобы не раздувать localStorage.
+    // Если база недоступна — откатываемся на localStorage. Всегда читаем с life_time = -1 (иначе промис может не разрешиться).
+    var bigMem = {};
+
+    function bigSet(key, value) {
+        bigMem[key] = value;
+        var fallback = function () { try { Lampa.Storage.set(key, value); } catch (e) { /* квота */ } };
+        try {
+            if (Lampa.Cache && Lampa.Cache.rewriteData) {
+                Lampa.Cache.rewriteData('other', key, value)['catch'](fallback);
+                try { window.localStorage.removeItem(key); } catch (e) { /* ignore */ }
+            } else fallback();
+        } catch (e) { fallback(); }
+    }
+
+    function bigGet(key, cb) {
+        if (bigMem[key]) return cb(bigMem[key]);
+        var legacy = function () {
+            var v = Lampa.Storage.get(key, '');
+            cb(v && typeof v === 'object' ? v : null);
+        };
+        try {
+            if (Lampa.Cache && Lampa.Cache.getData) {
+                Lampa.Cache.getData('other', key, -1).then(function (v) {
+                    if (v && typeof v === 'object') { bigMem[key] = v; cb(v); } else legacy();
+                })['catch'](legacy);
+            } else legacy();
+        } catch (e) { legacy(); }
+    }
+
     function episodeHash(animeId, epName) {
         return Lampa.Utils.hash('animevost:' + animeId + ':' + epName);
     }
@@ -372,7 +411,12 @@
     }
 
     function loadOngoing(ok, fail, force) {
-        var cache = getMap('animevost_cache_last');
+        bigGet('animevost_cache_last', function (cache) {
+            loadOngoingWith(cache || {}, ok, fail, force);
+        });
+    }
+
+    function loadOngoingWith(cache, ok, fail, force) {
         if (!force && cache.ts && Date.now() - cache.ts < CACHE_TTL && cache.list) return ok(cache.list);
 
         var pages = parseInt(setting('animevost_pages', 3), 10) || 3;
@@ -386,7 +430,7 @@
                 return fail('empty');
             }
             // описания в кеше дашборда не нужны (карточки их не показывают) — кеш в разы легче
-            Lampa.Storage.set('animevost_cache_last', {
+            bigSet('animevost_cache_last', {
                 ts: Date.now(),
                 list: list.map(function (a) { return $.extend({}, a, { description: '' }); })
             });
@@ -495,16 +539,17 @@
 
     function loadAnime(id, ok, fail) {
         var key = 'animevost_pl_' + id;
-        var cached = Lampa.Storage.get(key, '');
         var info = null, playlist = null, errors = 0, left = 2;
 
         function done() {
             if (--left) return;
             if (!playlist || !playlist.length) {
-                if (cached && cached.playlist) return ok(cached.info || info, cached.playlist, true);
-                return fail('empty');
+                return bigGet(key, function (cached) {
+                    if (cached && cached.playlist) ok(cached.info || info, cached.playlist, true);
+                    else fail('empty');
+                });
             }
-            Lampa.Storage.set(key, { ts: Date.now(), info: info, playlist: playlist });
+            bigSet(key, { ts: Date.now(), info: info, playlist: playlist });
             ok(info, playlist, false);
         }
 
@@ -800,6 +845,12 @@
         };
     }
 
+    function historyList() {
+        var st = getMap('animevost_state');
+        return Object.keys(st).map(function (k) { return st[k]; })
+            .sort(function (a, b) { return b.ts - a.ts; });
+    }
+
     function openAnime(a) {
         Lampa.Activity.push({
             url: '',
@@ -915,12 +966,7 @@
             scroll.append(bar);
         }
 
-        function history() {
-            var st = getMap('animevost_state');
-            return Object.keys(st).map(function (k) { return st[k]; })
-                .sort(function (a, b) { return b.ts - a.ts; })
-                .slice(0, 20);
-        }
+        function history() { return historyList().slice(0, 20); }
 
         function finish() {
             grid.layout(layoutRows);
@@ -1036,12 +1082,20 @@
         var epNodes = [];     // по глобальному индексу серии; создаются только для текущей страницы
         var page = 0;
         var rows = [[], []];
-        var continueBtn, relBtn, pageBtn, plBtn, qBtn, descrBtn, relWrap, pageWrap, related = [], timerBox, head, descrEl, epsHost, tick;
+        var continueBtn, relBtn, pageBtn, plBtn, qBtn, descrBtn, lampaBtn, relWrap, pageWrap, related = [], timerBox, head, descrEl, epsHost, tick;
         var dd = null, ddItems = [], ddIdx = 0;
-        var destroyed = false, token = 0;
+        var destroyed = false, token = 0, tlTimer = null;
 
         scroll.minus();
         html.append(scroll.render());
+
+        // Любое обновление Timeline (автопереход, внешний плеер, другое устройство через CUB) — обновляем прогресс
+        function onTimeline() {
+            clearTimeout(tlTimer);
+            tlTimer = setTimeout(function () {
+                if (!destroyed && eps.length) refreshProgress();
+            }, 400);
+        }
 
         function viewOf(ep) {
             return Lampa.Timeline.view(episodeHash(anime.id, ep.name));
@@ -1358,6 +1412,7 @@
             if (pageCount() > 1) row.push(pageBtn);
             row.push(plBtn, qBtn);
             if (anime.description) row.push(descrBtn);
+            if (Lampa.Search && Lampa.Search.open) row.push(lampaBtn);
             return row;
         }
 
@@ -1454,6 +1509,10 @@
             });
             descrBtn = button(btns, 'Описание', showDescription);
             if (!anime.description) descrBtn.hide();
+            lampaBtn = button(btns, 'Карточка Lampa', function () {
+                Lampa.Search.open({ input: lampaQuery(anime) });
+            });
+            if (!(Lampa.Search && Lampa.Search.open)) lampaBtn.hide();
             rows[ROW_BTNS] = btnRow();
 
             scroll.append(head);
@@ -1481,6 +1540,7 @@
             self.activity.loader(true);
             tick = setInterval(tickTimer, 30000);
             document.addEventListener('visibilitychange', onVisible);
+            if (Lampa.Timeline && Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', onTimeline);
             load();
         };
 
@@ -1497,6 +1557,8 @@
             destroyed = true;
             clearInterval(tick);
             document.removeEventListener('visibilitychange', onVisible);
+            clearTimeout(tlTimer);
+            if (Lampa.Timeline && Lampa.Timeline.listener && Lampa.Timeline.listener.remove) Lampa.Timeline.listener.remove('update', onTimeline);
             scroll.destroy();
             html.remove();
         };
@@ -1600,6 +1662,63 @@
         });
     }
 
+    // Ряды на главном экране Lampa: «продолжить» и «сегодня выходит» (без сетевых запросов — только из кеша)
+    function addMainRows() {
+        if (!Lampa.ContentRows || !Lampa.ContentRows.add) return;
+        bigGet('animevost_cache_last', function () { /* прогреваем кеш для ряда «сегодня» */ });
+
+        var mk = function (a) {
+            return {
+                id: a.id,
+                title: a.ru,
+                name: a.ru,
+                original_title: a.en,
+                original_name: a.en,
+                img: bestPoster(a.poster),
+                poster: bestPoster(a.poster),
+                release_date: a.year ? a.year + '-01-01' : '',
+                vote_average: 0,
+                source: 'animevost',
+                anime: a,
+                params: { emit: { onlyEnter: function () { openAnime(a); } } }
+            };
+        };
+
+        Lampa.ContentRows.add({
+            name: 'animevost_continue',
+            title: 'AnimeVost: продолжить просмотр',
+            index: 1,
+            screen: ['main'],
+            call: function () {
+                try {
+                    var hist = historyList().slice(0, 15);
+                    if (!hist.length) return;
+                    return function (call) { call({ results: hist.map(mk), title: 'AnimeVost: продолжить просмотр' }); };
+                } catch (e) { console.log('AnimeVost', 'row continue', e); }
+            }
+        });
+
+        Lampa.ContentRows.add({
+            name: 'animevost_today',
+            title: 'AnimeVost: сегодня выходит',
+            index: 2,
+            screen: ['main'],
+            call: function () {
+                try {
+                    var cache = bigMem.animevost_cache_last, sc = getMap('animevost_schedule').map;
+                    if (!cache || !cache.list || !sc) return;
+                    var today = (new Date(Date.now() + 3 * 3600000).getUTCDay() + 6) % 7;
+                    var items = cache.list.filter(function (a) { return sc[a.id] && sc[a.id].day === today; })
+                        .map(function (a) { return applySchedule($.extend({}, a), sc[a.id]); })
+                        .sort(function (x, y) { return (x.airMin >= 0 ? x.airMin : 9999) - (y.airMin >= 0 ? y.airMin : 9999); })
+                        .slice(0, 15);
+                    if (!items.length) return;
+                    return function (call) { call({ results: items.map(mk), title: 'AnimeVost: сегодня выходит' }); };
+                } catch (e) { console.log('AnimeVost', 'row today', e); }
+            }
+        });
+    }
+
     function start() {
         injectStyle();
         cleanCaches();
@@ -1609,6 +1728,7 @@
         addSettings();
         addMenu();
         try { addGlobalSearch(); } catch (e) { console.log('AnimeVost', 'global search unavailable', e); }
+        try { addMainRows(); } catch (e) { console.log('AnimeVost', 'main rows unavailable', e); }
     }
 
     if (window.appready) start();
