@@ -46,6 +46,8 @@
             plus: false,
             nextEp: '',
             nextDate: null,
+            airAt: 0,
+            airExact: false,
             day: -1,
             ongoing: false
         };
@@ -57,6 +59,7 @@
             item.plus = !!prog[4];
         }
 
+        var timer = parseInt(a.timer, 10) * 1000 || 0;
         var next = tags.match(/\[(\d+)\s+серия\s*-\s*(\d+)\s+([А-Яа-яЁё]+)/);
         if (next && MONTHS[next[3].toLowerCase()] !== undefined) {
             var d = new Date(now.getFullYear(), MONTHS[next[3].toLowerCase()], parseInt(next[2], 10));
@@ -64,13 +67,16 @@
             item.nextEp = next[1] + ' серия';
             item.nextDate = d;
             item.day = dayIndex(d);
-        } else {
-            var t = parseInt(a.timer, 10);
-            if (t && t * 1000 > now.getTime() - 86400000) {
-                item.nextDate = new Date(t * 1000);
-                item.day = dayIndex(item.nextDate);
-                if (item.current) item.nextEp = (item.current + 1) + ' серия';
-            }
+            // timer даёт точное время, но иногда устаревший — верим ему только если день совпал
+            var td = new Date(timer);
+            item.airAt = timer > now.getTime() && td.toDateString() === d.toDateString() ? timer : d.getTime();
+            item.airExact = item.airAt === timer && timer > 0;
+        } else if (timer > now.getTime() - 86400000) {
+            item.nextDate = new Date(timer);
+            item.day = dayIndex(item.nextDate);
+            if (item.current) item.nextEp = (item.current + 1) + ' серия';
+            item.airAt = timer;
+            item.airExact = timer > now.getTime();
         }
 
         item.ongoing = item.day > -1 || item.plus || (item.total > 0 && item.current < item.total);
@@ -101,6 +107,63 @@
         return sections;
     }
 
+    // Текст "до выхода следующей серии"; '' если выхода не ожидается
+    function countdownText(a, now) {
+        now = now || Date.now();
+        if (!a || !a.airAt || !a.ongoing) return '';
+        var label = a.nextEp ? a.nextEp[0].toUpperCase() + a.nextEp.slice(1) : 'Следующая серия';
+        var diff = a.airAt - now;
+        if (a.airExact && diff > 0) {
+            var d = Math.floor(diff / 86400000), h = Math.floor(diff % 86400000 / 3600000), m = Math.floor(diff % 3600000 / 60000);
+            var parts = [];
+            if (d) parts.push(d + ' д');
+            if (d || h) parts.push(h + ' ч');
+            parts.push(m + ' мин');
+            return label + ' выйдет через ' + parts.join(' ');
+        }
+        var days = Math.round((a.airAt - new Date(now).setHours(0, 0, 0, 0)) / 86400000);
+        if (days <= 0) return label + ' выходит сегодня';
+        if (days === 1) return label + ' выходит завтра';
+        return label + ' выйдет через ' + days + ' дн.';
+    }
+
+    var REL_MARK = /(^|[\s(])(сезон|фильм|ова|ova|ona|спешл|special|часть|эпизод|movie)/i;
+
+    // Ключ франшизы: название без "(второй сезон)", "ОВА-1", "(фильм первый)" и подзаголовка после ":"
+    function franchiseKey(ru) {
+        var k = (ru || '').replace(/\s*\([^)]*\)/g, function (m) { return REL_MARK.test(m) ? '' : m; });
+        k = k.replace(/\s+(ОВА|OVA|ONA)[\s\-\d].*$/i, '').replace(/\s+(ОВА|OVA|ONA)$/i, '');
+        k = k.split(':')[0];
+        return k.replace(/ё/gi, 'е').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    var ORD = { 'первый': 1, 'второй': 2, 'третий': 3, 'четвертый': 4, 'четвёртый': 4, 'пятый': 5, 'шестой': 6, 'седьмой': 7, 'восьмой': 8, 'девятый': 9, 'десятый': 10 };
+
+    // Подпись для переключателя: "2 сезон", "Фильм 1", "ОВА", иначе подзаголовок
+    function relationLabel(a) {
+        var ru = a.ru || '';
+        var m = ru.match(/\(([^)]*?)\s*сезон[^)]*\)/i);
+        if (m) {
+            var w = m[1].trim().toLowerCase();
+            return (ORD[w] || parseInt(w, 10) || w) + ' сезон';
+        }
+        m = ru.match(/\(фильм\s*([^)]*)\)/i);
+        if (m) return 'Фильм' + (ORD[m[1].trim().toLowerCase()] ? ' ' + ORD[m[1].trim().toLowerCase()] : (m[1] ? ' ' + m[1] : ''));
+        m = ru.match(/(?:^|\s)(?:ОВА|OVA)(?=[\s\-\d]|$)[\s\-]*(\d*)/i);
+        if (m) return m[1] ? 'ОВА ' + m[1] : 'ОВА';
+        if (/полнометражн/i.test(a.type) || /фильм/i.test(a.type)) return 'Фильм';
+        if (/ona/i.test(a.type)) return 'ONA';
+        var sub = ru.split(':').slice(1).join(':').trim();
+        if (sub) return sub;
+        return /ТВ/i.test(a.type) ? '1 сезон' : (a.type || 'Тайтл');
+    }
+
+    function sortRelated(list) {
+        return list.slice().sort(function (x, y) {
+            return (parseInt(x.year, 10) || 0) - (parseInt(y.year, 10) || 0) || x.id - y.id;
+        });
+    }
+
     function fmtTime(sec) {
         sec = Math.max(0, Math.floor(sec || 0));
         var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
@@ -109,7 +172,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -238,6 +301,24 @@
         request('/search', { name: query }, function (r) {
             ok((r.data || []).map(function (a) { return parseAnime(a); }));
         }, fail);
+    }
+
+    // Сезоны/фильмы/ОВА: API связей не отдаёт, ищем по ключу франшизы и фильтруем по совпадению ключа
+    function loadRelated(anime, ok) {
+        var key = franchiseKey(anime.ru);
+        if (!key) return ok([]);
+        var ck = 'animevost_rel_' + key;
+        var cache = Lampa.Storage.get(ck, '');
+        if (cache && cache.ts && Date.now() - cache.ts < 7 * 86400000) return ok(cache.list);
+
+        request('/search', { name: key }, function (r) {
+            var list = sortRelated((r.data || []).map(function (a) { return parseAnime(a); })
+                .filter(function (a) { return franchiseKey(a.ru) === key; }));
+            // у самого тайтла данные свежее (он уже загружен) — подменяем
+            list = list.map(function (a) { return a.id === anime.id ? $.extend({}, a, anime) : a; });
+            Lampa.Storage.set(ck, { ts: Date.now(), list: list });
+            ok(list);
+        }, function () { ok(cache && cache.list ? cache.list : []); });
     }
 
     function loadAnime(id, ok, fail) {
@@ -371,6 +452,14 @@
             '.avost-anime__title{font-size:2em;line-height:1.2}' +
             '.avost-anime__en{opacity:.6;margin-top:.2em}' +
             '.avost-anime__meta{margin:.8em 0;opacity:.8}' +
+            '.avost-anime__timer{margin:.3em 0 .6em;font-size:1.2em;color:#ffa94d}' +
+            '.avost-anime__rel{margin:.6em 0}' +
+            '.avost-anime__rel-title{opacity:.6;margin-bottom:.4em}' +
+            '.avost-rel{display:flex;flex-wrap:wrap;gap:.6em}' +
+            '.avost-chip{padding:.5em 1em;border-radius:.6em;background:rgba(255,255,255,.1)}' +
+            '.avost-chip__year{opacity:.55;margin-left:.6em;font-size:.9em}' +
+            '.avost-chip--current{background:#e8590c;color:#fff}' +
+            '.avost-chip.focus{background:#fff;color:#000}' +
             '.avost-anime__descr{margin:1em 0;line-height:1.45;max-height:7.5em;overflow:hidden;opacity:.85}' +
             '.avost-anime__btns{display:flex;flex-wrap:wrap;gap:.8em;margin:1em 0}' +
             '.avost-eps{padding:0 1.5em 2em}' +
@@ -582,7 +671,7 @@
         var eps = [];
         var epNodes = [];
         var last = null;
-        var continueBtn;
+        var continueBtn, relBox, timerBox, tick;
 
         scroll.minus();
         html.append(scroll.render());
@@ -648,6 +737,38 @@
             }
         }
 
+        function tickTimer() {
+            if (!timerBox) return;
+            var txt = countdownText(anime);
+            timerBox.text(txt ? '⏱ ' + txt : '').toggle(!!txt);
+        }
+
+        // Переключатель сезонов/фильмов/ОВА; показываем только если связанных тайтлов больше одного
+        function renderRelated(list) {
+            if (!relBox || !relBox.length || list.length < 2) return;
+            relBox.empty();
+            relBox.append('<div class="avost-anime__rel-title">Сезоны и фильмы</div>');
+            var wrap = $('<div class="avost-rel"></div>');
+            list.forEach(function (a) {
+                var chip = $('<div class="avost-chip selector"></div>');
+                chip.append($('<span class="avost-chip__name"></span>').text(relationLabel(a)));
+                if (a.year) chip.append($('<span class="avost-chip__year"></span>').text(a.year));
+                if (a.id === anime.id) chip.addClass('avost-chip--current');
+                chip.on('hover:focus', function () { last = chip[0]; scroll.update(chip, false); });
+                chip.on('hover:hover hover:touch', function () { last = chip[0]; });
+                chip.on('hover:enter', function () {
+                    if (a.id === anime.id) return;
+                    Lampa.Activity.replace({ anime: a, title: a.ru });
+                });
+                wrap.append(chip);
+            });
+            relBox.append(wrap);
+            if (Lampa.Activity.active() && Lampa.Activity.active().activity === self.activity &&
+                Lampa.Controller.enabled().name === 'animevost_anime') {
+                Lampa.Controller.toggle('animevost_anime'); // пересобрать список фокусируемых элементов
+            }
+        }
+
         function button(container, label, act) {
             var el = $('<div class="avost-btn selector"></div>').text(label);
             el.on('hover:focus', function () { last = el[0]; scroll.update(el, false); });
@@ -667,7 +788,9 @@
                 '<div class="avost-anime__body">' +
                 '<div class="avost-anime__title"></div><div class="avost-anime__en"></div>' +
                 '<div class="avost-anime__meta"></div>' +
+                '<div class="avost-anime__timer"></div>' +
                 '<div class="avost-anime__btns"></div>' +
+                '<div class="avost-anime__rel"></div>' +
                 '<div class="avost-anime__descr"></div></div></div>');
 
             setImage(head.find('img'), anime.poster);
@@ -679,6 +802,9 @@
                 offline ? 'офлайн-кеш' : ''
             ].filter(Boolean).join(' · '));
             head.find('.avost-anime__descr').text(anime.description);
+            relBox = head.find('.avost-anime__rel');
+            timerBox = head.find('.avost-anime__timer');
+            tickTimer();
 
             var btns = head.find('.avost-anime__btns');
             continueBtn = button(btns, 'Смотреть', function () { play(resumeIndex()); });
@@ -706,6 +832,7 @@
             });
             scroll.append(list);
             refreshProgress();
+            loadRelated(anime, renderRelated);
 
             // фокус сразу на серии, которую нужно продолжить
             var st = getMap('animevost_state')[anime.id];
@@ -718,6 +845,7 @@
 
         this.create = function () {
             self.activity.loader(true);
+            tick = setInterval(tickTimer, 30000);
             loadAnime(anime.id, build, function () {
                 scroll.clear();
                 scroll.append($('<div class="avost-empty">Не удалось получить список серий.</div>'));
@@ -735,7 +863,7 @@
         this.pause = function () {};
         this.stop = function () {};
         this.render = function () { return html; };
-        this.destroy = function () { scroll.destroy(); html.remove(); };
+        this.destroy = function () { clearInterval(tick); scroll.destroy(); html.remove(); };
     }
 
     /* ------------------------------------------------------------------ */
