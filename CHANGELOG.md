@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-02
+
 ### Добавлено
 - Настройки AnimeVost → «Диагностика»: проверяет API, обновляет расписание и показывает версию плагина, платформу, User-Agent и ошибки загрузки расписания.
 
@@ -95,7 +97,8 @@
 ### Добавлено
 - Первая версия: дашборд онгоингов по дням недели, страница тайтла со списком серий, запоминание прогресса и таймкода через `Lampa.Timeline`, история, выбор плеера, поиск, настройки.
 
-[Unreleased]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/igorstasiuk/animevost-lampa/compare/v0.6.0...v1.0.0
