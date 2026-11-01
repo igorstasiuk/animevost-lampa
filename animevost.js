@@ -456,7 +456,7 @@
         function row(title, list, badgeFn) {
             var line = new Lampa.Scroll({ horizontal: true, step: 300 });
             var wrap = $('<div class="avost-row"><div class="avost-row__title"></div></div>');
-            wrap.find('.avost-row__title').text(title);
+            wrap.find('.avost-row__title').text(title).toggle(!!title);
 
             list.forEach(function (a) {
                 var el = card(a, badgeFn && badgeFn(a));
@@ -542,7 +542,15 @@
             self.activity.loader(true);
             if (object.query) {
                 searchAnime(object.query, function (list) {
-                    build([{ title: 'Результаты', items: list }]);
+                    // результаты рядами по 7 карточек, чтобы по ним удобно ходить пультом
+                    var sections = [];
+                    for (var i = 0; i < list.length; i += 7) {
+                        sections.push({
+                            title: i ? '' : 'Найдено: ' + list.length,
+                            items: list.slice(i, i + 7)
+                        });
+                    }
+                    build(sections);
                 }, fail);
             } else {
                 loadOngoing(function (list) { build(groupByDay(list)); }, fail, force);
@@ -782,12 +790,54 @@
         });
     }
 
+    // Источник в глобальном поиске Lampa: AnimeVost появляется рядом с TMDB-результатами
+    function addGlobalSearch() {
+        if (!Lampa.Search || !Lampa.Search.addSource) return;
+
+        var toCard = function (a) {
+            return {
+                id: a.id,
+                title: a.ru,
+                name: a.ru,
+                original_title: a.en,
+                original_name: a.en,
+                img: a.poster,
+                poster: a.poster,
+                release_date: a.year ? a.year + '-01-01' : '',
+                vote_average: 0,
+                source: 'animevost',
+                anime: a
+            };
+        };
+
+        Lampa.Search.addSource({
+            title: 'AnimeVost',
+            search: function (params, done) {
+                var q = decodeURIComponent(params.query || '');
+                searchAnime(q, function (list) {
+                    done(list.length ? [{ title: 'AnimeVost', results: list.map(toCard), total: list.length }] : []);
+                }, function () { done([]); });
+            },
+            onCancel: function () {},
+            params: { lazy: true, align_left: true, card_events: { onMenu: function () {} } },
+            onMore: function (params, close) {
+                if (close) close();
+                Lampa.Activity.push({ url: '', title: 'Поиск: ' + params.query, component: 'animevost_main', query: params.query, page: 1 });
+            },
+            onSelect: function (params, close) {
+                if (close) close();
+                openAnime(params.element.anime);
+            }
+        });
+    }
+
     function start() {
         injectStyle();
         Lampa.Component.add('animevost_main', MainComponent);
         Lampa.Component.add('animevost_anime', AnimeComponent);
         addSettings();
         addMenu();
+        try { addGlobalSearch(); } catch (e) { console.log('AnimeVost', 'global search unavailable', e); }
     }
 
     if (window.appready) start();
