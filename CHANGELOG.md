@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-02
+
 ### Исправлено
 - Кнопки выбора сезона/фильма и страниц серий были ниже остальных кнопок в ряду — теперь той же высоты.
 
@@ -78,7 +80,8 @@
 ### Добавлено
 - Первая версия: дашборд онгоингов по дням недели, страница тайтла со списком серий, запоминание прогресса и таймкода через `Lampa.Timeline`, история, выбор плеера, поиск, настройки.
 
-[Unreleased]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/igorstasiuk/animevost-lampa/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/igorstasiuk/animevost-lampa/compare/v0.6.0...v1.0.0
 [0.6.0]: https://github.com/igorstasiuk/animevost-lampa/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/igorstasiuk/animevost-lampa/compare/v0.5.0...v0.5.1
