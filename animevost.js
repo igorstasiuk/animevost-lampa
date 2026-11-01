@@ -333,6 +333,54 @@
         img.attr('src', chain[step]);
     }
 
+    // Ленивая загрузка картинок. Сначала грузится всё, что в зоне видимости с запасом (opts.margin экранов
+    // вокруг), чтобы при прокрутке не мелькали пустые плейсхолдеры. opts.trickle > 0 — остальные картинки
+    // подгружаются фоном по несколько штук за тик, пока пользователь смотрит экран: в итоге грузятся все
+    // (постер нужен, чтобы узнать тайтл), но без одновременного шквала запросов. Проверка по таймеру и при
+    // смене фокуса — без IntersectionObserver (его нет в старых WebView).
+    function Lazy(opts) {
+        opts = opts || {};
+        var margin = opts.margin === undefined ? 1 : opts.margin, trickle = opts.trickle || 0;
+        var items = [], timer = null;
+
+        function near(n) {
+            var r = n.getBoundingClientRect();
+            var vh = window.innerHeight || 720, vw = window.innerWidth || 1280;
+            return r.bottom > -vh * margin && r.top < vh * (1 + margin) && r.right > -vw * margin && r.left < vw * (1 + margin);
+        }
+
+        this.add = function (img, url, onFail) { items.push({ img: img, url: url, fail: onFail }); };
+        this.reset = function () { items = []; };
+        this.check = function () {
+            if (document.hidden) return;
+            var far = [];
+            items = items.filter(function (it) {
+                var n = it.img[0];
+                if (!n || !$.contains(document.documentElement, n)) return true; // ещё не в DOM — ждём
+                if (near(n)) {
+                    setImage(it.img, it.url, it.fail);
+                    return false;
+                }
+                far.push(it);
+                return true;
+            });
+            // фоновая подгрузка дальних: несколько штук за тик, в порядке следования в DOM
+            if (trickle && far.length) {
+                far.slice(0, trickle).forEach(function (it) { setImage(it.img, it.url, it.fail); });
+                items = items.filter(function (it) { return far.slice(0, trickle).indexOf(it) < 0; });
+            }
+        };
+        this.start = function () {
+            var self = this;
+            if (!timer) timer = setInterval(function () { self.check(); }, 500);
+        };
+        this.stop = function () {
+            clearInterval(timer);
+            timer = null;
+            items = [];
+        };
+    }
+
     function getMap(key) {
         var v = Lampa.Storage.get(key, '{}');
         return v && typeof v === 'object' ? v : {};
@@ -448,7 +496,10 @@
         }
     }
 
-    // Страница сайта без CORS: на Android Lampa ходит нативным запросом, в браузере — через прокси из настроек
+    // Страница сайта без CORS: на Android Lampa ходит нативным запросом, в браузере — через прокси из настроек.
+    // Сайт отдаёт разную вёрстку по User-Agent (для Android — мобильную без расписания), поэтому просим десктопную.
+    var DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+
     function fetchText(url, ok, fail) {
         var proxy = ('' + setting('animevost_proxy', '')).trim();
         var viaAjax = function () {
@@ -457,8 +508,8 @@
         };
         try {
             new Lampa.Reguest().native(url, function (str) {
-                typeof str === 'string' && str.length > 1000 ? ok(str) : viaAjax();
-            }, viaAjax, false, { dataType: 'text' });
+                typeof str === 'string' && str.length > 200 ? ok(str) : viaAjax();
+            }, viaAjax, false, { dataType: 'text', headers: { 'User-Agent': DESKTOP_UA } });
         } catch (e) { viaAjax(); }
     }
 
@@ -478,16 +529,36 @@
         } catch (e) { /* storage недоступен */ }
     }
 
+    // Расписание: сначала выделенная страница /raspisanie.html (в ней блок с расписанием есть и в мобильной, и в десктопной
+    // версии сайта), затем главная. Каждая попытка проверяется разбором, а не размером ответа. Итоги пишем в диагностику.
     function loadSchedule(ok, fail, force) {
         var cache = getMap('animevost_schedule');
         if (!force && cache.ts && Date.now() - cache.ts < 3 * 3600000 && cache.map) return ok(cache.map);
         var site = ('' + setting('animevost_site', 'https://animevost.org')).replace(/\/+$/, '') + '/';
-        fetchText(site, function (html) {
-            var map = parseSchedule(html);
-            if (!map) return cache.map ? ok(cache.map) : fail('parse');
-            Lampa.Storage.set('animevost_schedule', { ts: Date.now(), map: map });
-            ok(map);
-        }, function (e) { cache.map ? ok(cache.map) : fail(e); });
+        var urls = [site + 'raspisanie.html', site];
+        var tries = [];
+
+        function finish(map, err) {
+            Lampa.Storage.set('animevost_diag', { ts: Date.now(), tries: tries, entries: map ? Object.keys(map).length : 0, error: err || '' });
+            if (map) {
+                Lampa.Storage.set('animevost_schedule', { ts: Date.now(), map: map });
+                return ok(map);
+            }
+            cache.map ? ok(cache.map) : fail(err || 'parse');
+        }
+
+        function attempt(i) {
+            if (i >= urls.length) return finish(null, 'нет расписания: ' + tries.map(function (t) { return t.url + ' → ' + (t.error || t.entries + ' записей'); }).join('; '));
+            fetchText(urls[i], function (html) {
+                var map = parseSchedule(html);
+                tries.push({ url: urls[i], bytes: html.length, entries: map ? Object.keys(map).length : 0 });
+                if (map) finish(map); else attempt(i + 1);
+            }, function (e) {
+                tries.push({ url: urls[i], error: '' + e });
+                attempt(i + 1);
+            });
+        }
+        attempt(0);
     }
 
     // Дашборд = свежие обновления из API + официальное расписание сайта (если удалось получить).
@@ -667,15 +738,31 @@
     function playEpisode(anime, eps, idx, onClose) {
         var go = function (mode) {
             var ep = eps[idx];
+            // Плейлист на сотни серий: url и timeline каждой серии вычисляются лениво — только когда плеер
+            // реально до них дотрагивается (переход на серию), а не для всех сразу при нажатии на одну.
             var playlist = eps.map(function (e, i) {
-                return {
+                var o = {
                     title: e.name,
-                    url: pickUrl(e),
                     poster: httpsify(e.preview),
-                    timeline: Lampa.Timeline.view(episodeHash(anime.id, e.name)),
                     // Lampa вызывает callback при автопереходе на серию — запоминаем актуальную
                     callback: function () { remember(anime, e.name, i, eps.length); }
                 };
+                var lazyProp = function (name, make) {
+                    var done = false, val;
+                    Object.defineProperty(o, name, {
+                        enumerable: true,
+                        configurable: true,
+                        get: function () {
+                            if (!done) { val = make(); done = true; }
+                            return val;
+                        },
+                        // Lampa присваивает url/timeline (например, Torserver.toPlayUrl) — разрешаем перезапись
+                        set: function (v) { val = v; done = true; }
+                    });
+                };
+                lazyProp('url', function () { return pickUrl(e); });
+                lazyProp('timeline', function () { return Lampa.Timeline.view(episodeHash(anime.id, e.name)); });
+                return o;
             });
             var item = {
                 title: anime.ru + ' — ' + ep.name,
@@ -832,11 +919,13 @@
                 left: function () {
                     refresh();
                     if (c > 0) { c--; self.focus(); }
+                    else if (self.onEdge && self.onEdge('left', r)) return;
                     else Lampa.Controller.toggle('menu');
                 },
                 right: function () {
                     refresh();
                     if (c < row(r).length - 1) { c++; self.focus(); }
+                    else if (self.onEdge) self.onEdge('right', r);
                 },
                 up: function () {
                     if (!self.step(-1)) Lampa.Controller.toggle('head');
@@ -878,6 +967,8 @@
         var bar;
         var destroyed = false, token = 0;
         var lastGroups = null, builtSig = '';
+        // дашборд: вся зона видимости + 2 экрана запаса, остальные постеры фоном (по 4 за тик) — грузятся все
+        var lazy = new Lazy({ margin: 2, trickle: 4 });
 
         scroll.minus();
         html.append(scroll.render());
@@ -887,7 +978,7 @@
                 '<div class="avost-card__img"><img alt=""/></div>' +
                 '<div class="avost-card__title"></div></div>');
             el.find('.avost-card__title').text(a.ru);
-            setImage(el.find('img'), a.poster);
+            lazy.add(el.find('img'), a.poster);
             var b = badge || (a.nextEp ? a.nextEp + (a.airTime ? ' · ' + a.airTime : '') : '') || (a.current ? a.current + '/' + (a.total || '?') + (a.plus ? '+' : '') : '');
             if (b) el.find('.avost-card__img').append($('<div class="avost-card__badge"></div>').text(b));
             if (pct > 0 && pct < 90) el.find('.avost-card__img').append($('<div class="avost-card__bar"><div></div></div>').find('div').css('width', pct + '%').end());
@@ -907,6 +998,7 @@
                 el.on('hover:focus', function () {
                     grid.track(el);
                     scroll.update(el, false);
+                    setTimeout(function () { lazy.check(); }, 60); // после сдвига скролла подгружаем картинки рядом
                 });
                 if (opts.onLong) {
                     el.on('hover:long', function () { opts.onLong(a); });
@@ -976,6 +1068,7 @@
             grid.at(sections.length ? 1 : 0, 0); // сразу на первую карточку, а не на панель кнопок
             self.activity.loader(false);
             self.activity.toggle();
+            setTimeout(function () { lazy.check(); }, 100); // первые картинки без ожидания таймера
         }
 
         // Управление историей: долгое нажатие на карточку в ряду «Продолжить просмотр»
@@ -1002,6 +1095,7 @@
         function build(groups) {
             lastGroups = groups;
             builtSig = histSig();
+            lazy.reset();
             scroll.clear();
             sections = [];
             toolbar();
@@ -1052,7 +1146,10 @@
             }
         };
 
-        this.create = function () { this.reload(false); };
+        this.create = function () {
+            lazy.start();
+            this.reload(false);
+        };
 
         this.start = function () {
             if (Lampa.Activity.active().activity !== this.activity) return;
@@ -1064,7 +1161,7 @@
         this.pause = function () {};
         this.stop = function () {};
         this.render = function () { return html; };
-        this.destroy = function () { destroyed = true; scroll.destroy(); html.remove(); };
+        this.destroy = function () { destroyed = true; lazy.stop(); scroll.destroy(); html.remove(); };
     }
 
     /* ------------------------------------------------------------------ */
@@ -1085,9 +1182,11 @@
         var epNodes = [];     // по глобальному индексу серии; создаются только для текущей страницы
         var page = 0;
         var rows = [[], []];
-        var continueBtn, relBtn, pageBtn, plBtn, qBtn, descrBtn, lampaBtn, relWrap, pageWrap, related = [], timerBox, head, descrEl, epsHost, tick;
+        var continueBtn, relBtn, pageBtn, plBtn, qBtn, descrBtn, lampaBtn, relWrap, related = [], timerBox, head, descrEl, epsHost, tick;
         var dd = null, ddItems = [], ddIdx = 0;
         var destroyed = false, token = 0, tlTimer = null;
+        // превью серий: только рядом с экраном (серия «подгружается», когда до неё дошли)
+        var epLazy = new Lazy({ margin: 1 });
 
         scroll.minus();
         html.append(scroll.render());
@@ -1169,11 +1268,12 @@
                 '<div class="avost-ep__name"></div>' +
                 '<div class="avost-ep__sub"></div></div>');
             el.find('.avost-ep__name').text(ep.name);
-            setImage(el.find('img'), ep.preview, function () { el.find('img').hide(); });
+            epLazy.add(el.find('img'), ep.preview, function () { el.find('img').hide(); });
             el.on('hover:focus', function () {
                 grid.track(el);
                 line.update(el, true);
                 scroll.update(wrap, false);
+                setTimeout(function () { epLazy.check(); }, 60);
             });
             el.on('hover:hover hover:touch', function () { grid.track(el); });
             el.on('hover:enter', function () { play(idx); });
@@ -1210,6 +1310,7 @@
         // Длинные тайтлы режем на страницы по PAGE_SIZE, чтобы не создавать тысячи тайлов сразу.
         function renderEpisodes() {
             epsHost.empty();
+            epLazy.reset();
             epNodes = [];
             var from = pageStart(), to = Math.min(eps.length, from + PAGE_SIZE);
             var title = 'Серии' + (pageCount() > 1 ? ' ' + eps[from].name.split(' ')[0] + '–' + eps[to - 1].name.split(' ')[0] : '');
@@ -1227,6 +1328,7 @@
             epsHost.append(wrap);
             rows[ROW_EPS] = nodes;
             refreshProgress();
+            setTimeout(function () { epLazy.check(); }, 100);
         }
 
         // после внешнего плеера Player.callback не вызывается — обновляем прогресс, когда окно снова видно
@@ -1357,48 +1459,42 @@
         function gotoPage(p, focusIdx) {
             page = Math.max(0, Math.min(pageCount() - 1, p));
             renderEpisodes();
-            pageBtn.text(pageLabel() + ' ▾');
             grid.set(rows, true);
             grid.at(ROW_EPS, focusIdx === undefined ? 0 : focusIdx - pageStart());
             Lampa.Controller.toggle('content');
         }
 
-        function pageLabel() {
-            var from = pageStart(), to = Math.min(eps.length, from + PAGE_SIZE);
-            return 'Серии ' + (from + 1) + '–' + to;
+        // Номер серии из названия («120 серия» → 120); у названий без числа (ОВА, спешл) — 0
+        function epNumber(ep) {
+            var m = /^\s*(\d+)/.exec(ep.name || '');
+            return m ? parseInt(m[1], 10) : 0;
         }
 
-        function openPages() {
-            var list = [];
-            for (var p = 0; p < pageCount(); p++) {
-                (function (pg) {
-                    var from = pg * PAGE_SIZE, to = Math.min(eps.length, from + PAGE_SIZE), seen = 0;
-                    for (var i = from; i < to; i++) if (viewOf(eps[i]).percent >= 90) seen++;
-                    list.push({
-                        name: 'Серии ' + (from + 1) + '–' + to,
-                        sub: seen ? 'просмотрено ' + seen + ' из ' + (to - from) : '',
-                        current: pg === page,
-                        pick: function () { gotoPage(pg, from); }
-                    });
-                })(p);
-            }
-            list.push({
-                name: 'Перейти к серии №…',
-                sub: '',
-                pick: function () {
-                    Lampa.Input.edit({ free: true, title: 'Номер серии', nosave: true, value: '' }, function (value) {
-                        var n = parseInt(value, 10);
-                        if (!n) return Lampa.Controller.toggle('content');
-                        var idx = Math.min(eps.length - 1, Math.max(0, n - 1));
-                        for (var i = 0; i < eps.length; i++) {
-                            if (parseInt(eps[i].name, 10) === n) { idx = i; break; }
-                        }
-                        gotoPage(Math.floor(idx / PAGE_SIZE), idx);
-                    });
+        // «Перейти к серии…»: вводим номер, плагин сам листает к нужной серии; такой серии нет — ничего не делаем
+        function openGoto() {
+            Lampa.Input.edit({ free: true, title: 'Номер серии', nosave: true, value: '' }, function (value) {
+                var n = parseInt(value, 10), idx = -1;
+                if (n > 0) {
+                    for (var i = 0; i < eps.length; i++) if (epNumber(eps[i]) === n) { idx = i; break; }
                 }
+                if (idx < 0) return Lampa.Controller.toggle('content');
+                gotoPage(Math.floor(idx / PAGE_SIZE), idx);
             });
-            openDd(pageWrap, list);
         }
+
+        // Край полосы серий: вправо с последней плитки — следующая страница, влево с первой — предыдущая
+        grid.onEdge = function (dir, row) {
+            if (row !== ROW_EPS || pageCount() < 2) return false;
+            if (dir === 'right' && page < pageCount() - 1) {
+                gotoPage(page + 1, (page + 1) * PAGE_SIZE);
+                return true;
+            }
+            if (dir === 'left' && page > 0) {
+                gotoPage(page - 1, page * PAGE_SIZE - 1);
+                return true;
+            }
+            return false;
+        };
 
         function renderRelated(list) {
             if (list.length < 2 || !relBtn) return;
@@ -1495,10 +1591,9 @@
             relBtn = button(relWrap, 'Сезоны ▾', openSeasons);
 
             page = Math.floor(resumeIndex() / PAGE_SIZE);
-            pageWrap = $('<div class="avost-dd-wrap"></div>');
-            btns.append(pageWrap);
-            pageBtn = button(pageWrap, pageLabel() + ' ▾', openPages);
-            if (pageCount() < 2) pageWrap.hide();
+            // у очень длинных тайтлов (сотни серий) — кнопка перехода к серии по номеру
+            pageBtn = button(btns, 'Перейти к серии…', openGoto);
+            if (pageCount() < 2) pageBtn.hide();
 
             plBtn = button(btns, 'Плеер: ' + PLAYERS[setting('animevost_player', 'lampa')], function () {
                 choosePlayer(function (v) {
@@ -1544,6 +1639,7 @@
         this.create = function () {
             self.activity.loader(true);
             tick = setInterval(tickTimer, 30000);
+            epLazy.start();
             document.addEventListener('visibilitychange', onVisible);
             if (Lampa.Timeline && Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', onTimeline);
             load();
@@ -1560,6 +1656,7 @@
         this.render = function () { return html; };
         this.destroy = function () {
             destroyed = true;
+            epLazy.stop();
             clearInterval(tick);
             document.removeEventListener('visibilitychange', onVisible);
             clearTimeout(tlTimer);
@@ -1586,12 +1683,70 @@
         $('.menu .menu__list').eq(0).append(item);
     }
 
+    // Диагностика: версия, платформа, доступность API и расписания — чтобы понять, почему на конкретном устройстве
+    // что-то отличается (старая версия из кеша, мобильная вёрстка сайта, недоступный API).
+    function platformName() {
+        var names = ['android', 'webos', 'tizen', 'apple_tv', 'apple', 'orsay', 'netcast', 'noname'], out = [];
+        names.forEach(function (n) { try { if (Lampa.Platform.is(n)) out.push(n); } catch (e) { /* ignore */ } });
+        return out.join(', ') || 'браузер/ПК';
+    }
+
+    function showDiagnostics(apiState) {
+        var d = getMap('animevost_diag'), sc = getMap('animevost_schedule');
+        var when = function (t) { return t ? new Date(t).toLocaleString() : '—'; };
+        var lines = [
+            'Версия плагина: ' + VERSION,
+            'Платформа: ' + platformName(),
+            'User-Agent: ' + ((typeof navigator !== 'undefined' && navigator.userAgent) || '').slice(0, 140),
+            'API: ' + api() + ' → ' + apiState,
+            'Расписание в кеше: ' + (sc.map ? Object.keys(sc.map).length + ' записей, ' + when(sc.ts) : 'нет'),
+            'Прокси для расписания: ' + (setting('animevost_proxy', '') || 'не задан')
+        ];
+        if (d.ts) {
+            lines.push('Последняя загрузка расписания: ' + when(d.ts) + ' — ' + (d.entries ? 'успешно, ' + d.entries + ' записей' : 'НЕ удалась'));
+            (d.tries || []).forEach(function (t) {
+                lines.push('  • ' + t.url + ' → ' + (t.error ? 'ошибка ' + t.error : t.bytes + ' байт, ' + t.entries + ' записей'));
+            });
+            if (d.error) lines.push('  ' + d.error);
+        } else {
+            lines.push('Расписание ещё не загружалось.');
+        }
+        lines.push('Если расписания нет — дни выхода берутся из заголовков тайтлов, часть тайтлов попадёт в «Без даты выхода».');
+
+        Lampa.Modal.open({
+            title: 'AnimeVost: диагностика',
+            html: $('<div class="avost-modal"></div>').append($('<div class="avost-modal__text"></div>').text(lines.join('\n'))),
+            size: 'medium',
+            onBack: function () {
+                Lampa.Modal.close();
+                Lampa.Controller.toggle('settings_component');
+            }
+        });
+    }
+
+    function runDiagnostics() {
+        Lampa.Noty.show('Проверяю API и расписание…');
+        var apiState = '…';
+        var left = 2;
+        var done = function () { if (!--left) showDiagnostics(apiState); };
+        var t0 = Date.now();
+        request('/last?page=1&quantity=1', null, function () { apiState = 'доступен (' + (Date.now() - t0) + ' мс)'; done(); },
+            function (e) { apiState = 'НЕДОСТУПЕН (' + e + ')'; done(); });
+        loadSchedule(function () { done(); }, function () { done(); }, true);
+    }
+
     function addSettings() {
         Lampa.SettingsApi.addComponent({ component: 'animevost', name: 'AnimeVost', icon: ICON });
         Lampa.SettingsApi.addParam({
             component: 'animevost',
             param: { name: 'animevost_version', type: 'static', default: '' },
             field: { name: 'Версия плагина', description: VERSION }
+        });
+        Lampa.SettingsApi.addParam({
+            component: 'animevost',
+            param: { name: 'animevost_diag_btn', type: 'button' },
+            field: { name: 'Диагностика', description: 'Проверить API, обновить расписание и показать версию, платформу и ошибки' },
+            onChange: runDiagnostics
         });
 
         Lampa.SettingsApi.addParam({

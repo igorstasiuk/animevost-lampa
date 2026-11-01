@@ -14,7 +14,7 @@ const errors=[];let pass=0,failn=0;
 const ok=(c,m)=>{if(c){pass++;console.log('  ok  ',m)}else{failn++;console.log('  FAIL',m)}};
 function mk(api){
  const dom=new JSDOM('<body><div class="menu"><ul class="menu__list"></ul></div></body>',{url:'https://lampa.test/',runScripts:'outside-only',pretendToBeVisual:true});
- const w=dom.window;global.window=w;global.document=w.document;w.$=w.jQuery=require('jquery');delete global.window;delete global.document;
+ const w=dom.window;global.window=w;global.document=w.document;delete require.cache[require.resolve('jquery')];w.$=w.jQuery=require('jquery');delete global.window;delete global.document;
  w.addEventListener('error',e=>errors.push(e.message));
  const S={idb:{},tl:[],rows:[],store:{},comps:{},handlers:{},log:[],cur:'',focused:null,act:{loader:()=>{},toggle:()=>{}},pushed:[],played:[]};
  if(api)S.store.animevost_api=api;
@@ -27,8 +27,8 @@ function mk(api){
   Activity:{push:o=>S.pushed.push(o),active:()=>({activity:S.act}),backward:()=>S.log.push('back'),replace:()=>{}},
   Player:{play:i=>S.played.push(i),playlist:()=>{},callback:c=>{S.cb=c},runas:v=>{S.runas=v},listener:{follow:(n,f)=>{(S.pl=S.pl||{})[n]=f}}},
   Select:{show:o=>{S.sel=o}},Noty:{show:()=>{}},Input:{edit:(o,cb)=>{S.input=cb}},Platform:{is:n=>n==='android',macOS:()=>false},
-  SettingsApi:{addComponent:()=>{},addParam:()=>{}},Search:{addSource:()=>{},open:o=>{S.searchOpen=o}},Cache:{rewriteData:(t,k,v)=>{S.idb[k]=JSON.parse(JSON.stringify(v));return Promise.resolve()},getData:(t,k)=>Promise.resolve(S.idb[k]||null)},ContentRows:{add:r=>S.rows.push(r)},Component:{add:(n,c)=>S.comps[n]=c},Listener:{follow:()=>{}},
-  Reguest:function(){this.native=(u,c,e)=>e()}};
+  SettingsApi:{addComponent:()=>{},addParam:p=>{(S.params=S.params||[]).push(p)}},Search:{addSource:()=>{},open:o=>{S.searchOpen=o}},Cache:{rewriteData:(t,k,v)=>{S.idb[k]=JSON.parse(JSON.stringify(v));return Promise.resolve()},getData:(t,k)=>Promise.resolve(S.idb[k]||null)},ContentRows:{add:r=>S.rows.push(r)},Component:{add:(n,c)=>S.comps[n]=c},Listener:{follow:()=>{}},
+  Reguest:function(){this.native=(u,c,e,post,opt)=>{if(S.native){S.nativeCalls=(S.nativeCalls||[]);S.nativeCalls.push({u,opt});return S.native(u,c,e)}e()}}};
  w.appready=true;w.eval(fs.readFileSync(PLUGIN,'utf8'));
  S.w=w;S.key=(n,k)=>S.handlers[n][k]();S.$=w.$;
  S.label=()=>{const e=w.$(S.focused);return e.hasClass('avost-ep')?'EP '+e.find('.avost-ep__name').text():e.hasClass('avost-card')?'CARD':e.hasClass('avost-dd__item')?'DD '+e.find('.avost-dd__name').text():'BTN '+e.text()};
@@ -214,25 +214,50 @@ const inDom=(S)=>S.focused&&S.w.document.body.contains?true:false;
  ok(!/Продолжить просмотр/.test(S.$(m.render()).text()),'clear history removes row');
  m.destroy();
 
- console.log('16. long title paging (One Piece)');
+ console.log('16. long title: jump-to-episode button + edge paging (One Piece)');
  S=mk();const op=await (await fetch('https://api.animevost.org/v1/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'name='+encodeURIComponent('Ван Пис')})).json();
  const big=op.data.map(x=>P.parseAnime(x)).sort((x,y)=>y.current-x.current)[0];
  a=new S.comps.animevost_anime({anime:{id:big.id,ru:big.ru,en:'',poster:''}});a.activity=S.act;a.create();
  ok(await until(()=>S.$(a.render()).find('.avost-ep').length,120),'big title loaded: '+big.ru.slice(0,25));
- const total=S.$(a.render()).find('.avost-ep').length;ok(total<=50,'only one page of tiles rendered: '+total);
+ ok(S.$(a.render()).find('.avost-ep').length===50,'one page of 50 tiles rendered');
  a.start();
- const pb=S.$(a.render()).find('.avost-btn').filter((i,e)=>/Серии \d+–\d+ ▾/.test(S.$(e).text()));ok(pb.length===1,'page button: '+pb.text());
- for(let i=0;i<12&&!/Серии \d+–\d+ ▾/.test(S.label());i++)S.key('content','right');
- S.$(S.focused).trigger('hover:enter');const ddn=S.$(a.render()).find('.avost-dd__item').length;ok(ddn>=3,'page dropdown items: '+ddn);
- S.key('animevost_dd','down');S.$(S.focused).trigger('hover:enter');
- ok(S.cur==='content'&&/Серии 51/.test(S.$(a.render()).find('.avost-row__title').text()),'switched to page 2: '+S.$(a.render()).find('.avost-row__title').text());
- ok(S.$(a.render()).find('.avost-ep').length===50,'50 tiles on page 2');
- S.key('content','down');ok(/EP/.test(S.label()),'nav into tiles of page 2: '+S.label());
+ const gb=()=>S.$(a.render()).find('.avost-btn').filter((i,e)=>S.$(e).text()==='Перейти к серии…');
+ ok(gb().length===1&&gb().css('display')!=='none','jump button present: «'+gb().text()+'»');
+ ok(S.$(a.render()).find('.avost-dd').length===0&&!/Серии \d+–\d+ ▾/.test(S.$(a.render()).find('.avost-btn').text()),'no page-range dropdown anymore');
+ const rowTitle=()=>S.$(a.render()).find('.avost-row__title').text();
+ const toBtn=()=>{S.key('content','up');for(let i=0;i<12&&!/Перейти к серии/.test(S.label());i++)S.key('content','right')};
+ // go to 120 -> page 3 (101-150), focus on tile 120
+ toBtn();ok(/Перейти к серии/.test(S.label()),'focus reached jump button');
+ S.$(S.focused).trigger('hover:enter');ok(typeof S.input==='function','input opened');
+ S.input('120');ok(/Серии 101/.test(rowTitle()),'jump to 120 -> '+rowTitle());
+ ok(/EP 120 серия/.test(S.label()),'focus on episode 120: '+S.label());
+ // nonexistent episode -> nothing happens
+ const titleBefore=rowTitle();
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input('999999');
+ ok(rowTitle()===titleBefore&&S.cur==='content','unknown episode 999999: page unchanged ('+rowTitle()+'), controller restored');
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input('0');ok(rowTitle()===titleBefore,'episode 0: nothing');
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input('abc');ok(rowTitle()===titleBefore,'non-numeric input: nothing');
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input('');ok(rowTitle()===titleBefore&&S.cur==='content','empty input (cancel): nothing, focus restored');
+ // jump to first/last
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input('1');ok(/Серии 1–50/.test(rowTitle())&&/EP 1 серия/.test(S.label()),'jump to 1: '+rowTitle()+' / '+S.label());
+ // edge paging: right from last tile of page 1 -> page 2
+ S.key('content','down');for(let i=0;i<60&&!/EP 50 серия/.test(S.label());i++)S.key('content','right');
+ ok(/EP 50 серия/.test(S.label()),'at last tile of page 1: '+S.label());
+ S.key('content','right');ok(/Серии 51/.test(rowTitle())&&/EP 51 серия/.test(S.label()),'right at edge -> next page: '+rowTitle()+' / '+S.label());
+ S.key('content','left');ok(/Серии 1–50/.test(rowTitle())&&/EP 50 серия/.test(S.label()),'left at first tile -> previous page, focus last tile: '+rowTitle()+' / '+S.label());
+ S.key('content','left');S.key('content','left');S.key('content','left');ok(/EP 47 серия/.test(S.label()),'ordinary left moves inside page: '+S.label());
+ // very first tile on first page: left goes to menu (no previous page)
+ for(let i=0;i<60;i++)S.key('content','left');ok(S.log.includes('toggle:menu'),'left at very first tile -> menu');
+ // last page right edge: nothing
+ toBtn();S.$(S.focused).trigger('hover:enter');S.input(String(big.current));
+ S.key('content','down');for(let i=0;i<60;i++)S.key('content','right');
+ ok(S.focused!==null&&S.cur==='content','right at the end of the last page: no crash, focus kept');
+ // play still uses full playlist
  S.$(S.focused).trigger('hover:enter');ok(S.played[0]&&S.played[0].playlist.length>100,'play uses full playlist ('+(S.played[0]&&S.played[0].playlist.length)+')');
- S.key('content','up');for(let i=0;i<12&&!/Серии \d+–\d+ ▾/.test(S.label());i++)S.key('content','right');
- S.$(S.focused).trigger('hover:enter');for(let i=0;i<ddn;i++)S.key('animevost_dd','down');S.$(S.focused).trigger('hover:enter');
- ok(typeof S.input==='function','goto-episode opens input');
- S.input('120');ok(/Серии 101/.test(S.$(a.render()).find('.avost-row__title').text()),'goto 120 -> page 3: '+S.$(a.render()).find('.avost-row__title').text());
+ // small titles do not get the button
+ a.destroy();
+ S=mk();a=new S.comps.animevost_anime({anime:{id:4064,ru:'x',en:'',poster:''}});a.activity=S.act;a.create();await until(()=>S.$(a.render()).find('.avost-ep').length);a.start();
+ ok(S.$(a.render()).find('.avost-btn').filter((i,e)=>S.$(e).text()==='Перейти к серии…').css('display')==='none','short title: jump button hidden');
  a.destroy();
 
  console.log('17. IndexedDB cache (Lampa.Cache) + offline fallback');
@@ -291,6 +316,78 @@ const inDom=(S)=>S.focused&&S.w.document.body.contains?true:false;
  ok(S.focused!==null&&S.cur==='content','controller consistent at the end: '+S.cur);
  ok(errors.length===0,'no JS errors in walk: '+errors.join('|'));
  a.destroy();m.destroy();
+
+ console.log('22. lazy loading: images near viewport only; lazy playlist');
+ S=mk();
+ S.shift=0;
+ S.$('<i>')[0].ownerDocument.defaultView.Element.prototype.getBoundingClientRect=function(){
+   const w=S.w;if(this.tagName==='IMG'&&w.$(this).closest('.avost-ep').length){const i=w.$('.avost-ep img').index(this);const l=i*300-S.shift;return {left:l,right:l+280,top:100,bottom:260,width:280,height:160}}
+   return {left:0,right:100,top:100,bottom:200,width:100,height:100};};
+ S.w.innerWidth=1000;S.w.innerHeight=700;
+ const tlCalls={n:0};const origView=S.w.Lampa.Timeline.view;S.w.Lampa.Timeline.view=h=>{tlCalls.n++;return origView(h)};
+ a=new S.comps.animevost_anime({anime:{id:big.id,ru:'x',en:'',poster:''}});a.activity=S.act;S.w.document.body.appendChild(a.render()[0]);a.create();
+ await until(()=>S.$(a.render()).find('.avost-ep').length>=10,120);await sleep(900);
+ let withSrc=()=>S.$(a.render()).find('.avost-ep img').filter((i,e)=>e.getAttribute('src')).length;
+ const tiles=S.$(a.render()).find('.avost-ep').length;
+ ok(tiles>=10&&withSrc()>0&&withSrc()<tiles,'only tiles near the viewport load images: '+withSrc()+' of '+tiles);
+ ok(!S.$(a.render()).find('.avost-ep img').last().attr('src'),'far tile has no src yet');
+ S.shift=300*(tiles-3);await sleep(900);
+ ok(!!S.$(a.render()).find('.avost-ep img').last().attr('src'),'after scrolling, far tile loads its image');
+ a.start();S.key('content','down');tlCalls.n=0;S.$(S.focused).trigger('hover:enter');
+ const p=S.played[0];ok(!!p,'playback started');
+ ok(tlCalls.n<10,'Timeline.view not called for the whole playlist on play: '+tlCalls.n+' calls for '+p.playlist.length+' items');
+ const before2=tlCalls.n;const tl5=p.playlist[5].timeline;ok(tlCalls.n===before2+1&&tl5&&tl5.hash,'timeline of one item computed lazily on access');
+ p.playlist[5].timeline;ok(tlCalls.n===before2+1,'and cached on second access');
+ ok(/^https:\/\/video/.test(p.playlist[6].url),'url computed lazily: '+p.playlist[6].url);
+ p.playlist[6].url='http://x/y.mp4';ok(p.playlist[6].url==='http://x/y.mp4','url can be overwritten by Lampa (Torserver.toPlayUrl)');
+ const keys=Object.keys(p.playlist[7]);ok(keys.includes('url')&&keys.includes('timeline')&&keys.includes('title'),'lazy props are enumerable (Lampa clones/filters by them): '+keys.join(','));
+ a.destroy();
+
+ console.log('23. dashboard posters: visible zone first, then all load in background');
+ S=mk();
+ S.$('<i>')[0].ownerDocument.defaultView.Element.prototype.getBoundingClientRect=function(){const w=S.w;if(this.tagName==='IMG'&&w.$(this).closest('.avost-card').length){const i=w.$('.avost-card img').index(this);const col=i%8,row=Math.floor(i/8);const t=row*600,l=col*200;return {left:l,right:l+180,top:t,bottom:t+500,width:180,height:500}}return {left:0,right:1,top:0,bottom:1,width:1,height:1}};
+ S.w.innerWidth=1600;S.w.innerHeight=900;
+ m=new S.comps.animevost_main({});m.activity=S.act;S.w.document.body.appendChild(m.render()[0]);m.create();
+ await until(()=>S.$(m.render()).find('.avost-card').length>20);
+ const cards=S.$(m.render()).find('.avost-card img').length;const loaded=()=>S.$(m.render()).find('.avost-card img').filter((i,e)=>e.getAttribute('src')).length;
+ await sleep(700);const first=loaded();
+ ok(cards>40&&first>0&&first<cards,'first pass loads the visible zone, not everything: '+first+' of '+cards);
+ ok(S.$(m.render()).find('.avost-card img').slice(0,8).filter((i,e)=>e.getAttribute('src')).length===8,'first row (visible) loaded');
+ await sleep(500*Math.ceil((cards-first)/4)+800);
+ ok(loaded()===cards,'background trickle eventually loads ALL posters: '+loaded()+' of '+cards);
+ m.destroy();
+
+ console.log('24. schedule on Android-like site: mobile main page has no schedule -> /raspisanie.html');
+ const fixture=fs.readFileSync(path.join(__dirname,'fixtures','raspisanie-mobile.html'),'utf8');
+ const mobileMain='<html><body>'+'<div>мобильная главная без расписания</div>'.repeat(60)+'</body></html>';
+ S=mk();S.native=(u,c,e)=>{ if(/raspisanie\.html$/.test(u)) c(fixture); else c(mobileMain); };
+ m=new S.comps.animevost_main({});m.activity=S.act;m.create();
+ await until(()=>S.$(m.render()).find('.avost-card').length,80);await sleep(500);
+ ok(S.nativeCalls&&/raspisanie\.html$/.test(S.nativeCalls[0].u),'first request goes to /raspisanie.html: '+(S.nativeCalls&&S.nativeCalls[0].u));
+ ok(S.nativeCalls[0].opt&&S.nativeCalls[0].opt.headers&&/Macintosh/.test(S.nativeCalls[0].opt.headers['User-Agent']),'native request asks for desktop User-Agent');
+ const sch=S.store.animevost_schedule;ok(sch&&Object.keys(sch.map).length>=40,'schedule parsed from mobile-markup page: '+(sch&&Object.keys(sch.map).length)+' entries');
+ ok(sch.map['3798']&&sch.map['3798'].day===4&&sch.map['3798'].time==='14:00','JoJo Steel Ball Run (3798) -> Friday 14:00');
+ const dg=S.store.animevost_diag;ok(dg&&dg.entries>=40&&dg.tries.length===1,'diagnostics recorded: '+JSON.stringify(dg&&dg.tries));
+ m.destroy();
+
+ console.log('25. fallback to the main page when /raspisanie.html fails; total failure keeps dashboard alive');
+ S=mk();S.native=(u,c,e)=>{ if(/raspisanie\.html$/.test(u)) e('403'); else c(fs.readFileSync(path.join(__dirname,'fixtures','raspisanie-mobile.html'),'utf8')) };
+ m=new S.comps.animevost_main({});m.activity=S.act;m.create();await until(()=>S.$(m.render()).find('.avost-card').length,80);await sleep(300);
+ ok(S.store.animevost_schedule&&S.store.animevost_diag.tries.length===2,'second URL tried after first failed: '+JSON.stringify(S.store.animevost_diag.tries.map(t=>t.error?'err':t.entries)));
+ m.destroy();
+ S=mk();S.native=(u,c,e)=>e('boom');m=new S.comps.animevost_main({});m.activity=S.act;m.create();
+ ok(await until(()=>S.$(m.render()).find('.avost-card').length,80),'dashboard still renders without schedule');
+ ok(S.store.animevost_diag&&S.store.animevost_diag.entries===0&&/нет расписания/.test(S.store.animevost_diag.error),'diagnostics explain failure: '+(S.store.animevost_diag&&S.store.animevost_diag.error||'').slice(0,80));
+ m.destroy();
+
+ console.log('26. diagnostics button in settings');
+ S=mk();const dbtn=(S.params||[]).find(p=>p.param.name==='animevost_diag_btn');
+ ok(dbtn&&dbtn.param.type==='button'&&typeof dbtn.onChange==='function','button registered in settings');
+ S.native=(u,c,e)=>c(fixture);dbtn.onChange();
+ ok(await until(()=>S.modal,60),'modal opened');
+ const txt=S.modal.html.text();
+ ok(/Версия плагина: \d+\.\d+\.\d+/.test(txt)&&/Платформа: android/.test(txt)&&/доступен/.test(txt)&&/записей/.test(txt),'modal shows version, platform, API and schedule state');
+ S.modal.onBack();ok(S.modalClosed&&S.cur==='settings_component','back returns to settings');
 
  console.log(`\n${pass} passed, ${failn} failed, js errors: ${errors.length}`);
  process.exit(failn?1:0);
