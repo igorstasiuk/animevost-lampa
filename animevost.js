@@ -158,9 +158,19 @@
         return /ТВ/i.test(a.type) ? '1 сезон' : (a.type || 'Тайтл');
     }
 
+    // Тип части франшизы: сезоны идут первыми, потом фильмы, ОВА и остальное
+    function relationKind(a) {
+        var ru = a.ru || '';
+        if (/\(фильм/i.test(ru) || /полнометражн|фильм/i.test(a.type || '')) return 1;
+        if (/(?:^|\s)(?:ОВА|OVA)(?=[\s\-\d]|$)/i.test(ru) || /ova/i.test(a.type || '')) return 2;
+        if (/ona|спешл|special/i.test(a.type || '')) return 3;
+        return 0;
+    }
+
     function sortRelated(list) {
         return list.slice().sort(function (x, y) {
-            return (parseInt(x.year, 10) || 0) - (parseInt(y.year, 10) || 0) || x.id - y.id;
+            return relationKind(x) - relationKind(y) ||
+                (parseInt(x.year, 10) || 0) - (parseInt(y.year, 10) || 0) || x.id - y.id;
         });
     }
 
@@ -172,7 +182,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -475,12 +485,6 @@
             '.avost-anime__en{opacity:.6;margin-top:.2em}' +
             '.avost-anime__meta{margin:.8em 0;opacity:.8}' +
             '.avost-anime__timer{margin:.3em 0 .6em;font-size:1.2em;color:#ffa94d}' +
-            '.avost-anime__rel{margin:.6em 0;max-width:60em}' +
-            '.avost-anime__rel-title{opacity:.6;margin-bottom:.4em}' +
-                        '.avost-chip{padding:.6em 1.2em;margin:0 .5em 0 0;border-radius:.6em;background:rgba(255,255,255,.1);white-space:nowrap;flex-shrink:0}' +
-            '.avost-chip__year{opacity:.55;margin-left:.6em;font-size:.9em}' +
-            '.avost-chip--current{background:#e8590c;color:#fff}' +
-            '.avost-chip.focus{background:#fff;color:#000}' +
             '.avost-anime__descr{margin:1em 0;line-height:1.45;max-height:7.5em;overflow:hidden;opacity:.85}' +
             '.avost-anime__btns{display:flex;flex-wrap:wrap;gap:.8em;margin:1em 0}' +
                         '.avost-row--eps .scroll__body{display:flex;flex-wrap:nowrap;align-items:flex-start}' +
@@ -523,7 +527,11 @@
 
         this.layout = function (fn) { layoutFn = fn; rows = fn(); };
 
-        this.set = function (arr) { rows = arr; };
+        this.set = function (arr, keep) {
+            var cur = keep ? row(r)[c] : null;
+            rows = arr;
+            if (cur) self.track(cur);
+        };
         this.at = function (nr, nc) { r = nr; c = nc || 0; };
 
         // вызывается из hover:focus / hover:hover — синхронизирует позицию с мышью и касанием
@@ -758,8 +766,8 @@
     /*  Component: страница тайтла и список серий                         */
     /* ------------------------------------------------------------------ */
 
-    // ряды страницы: 0 — кнопки, 1 — сезоны/фильмы, 2 — серии
-    var ROW_BTNS = 0, ROW_REL = 1, ROW_EPS = 2;
+    // ряды страницы: 0 — кнопки, 1 — серии
+    var ROW_BTNS = 0, ROW_EPS = 1;
 
     function AnimeComponent(object) {
         var self = this;
@@ -769,8 +777,8 @@
         var anime = object.anime;
         var eps = [];
         var epNodes = [];
-        var rows = [[], [], []];
-        var continueBtn, relBox, relLine, timerBox, head, tick;
+        var rows = [[], []];
+        var continueBtn, relBtn, plBtn, qBtn, related = [], timerBox, head, tick;
 
         scroll.minus();
         html.append(scroll.render());
@@ -845,35 +853,53 @@
             timerBox.text(txt ? '⏱ ' + txt : '').toggle(!!txt);
         }
 
-        // Переключатель сезонов/фильмов/ОВА; показываем только если связанных тайтлов больше одного
-        function renderRelated(list) {
-            if (!relBox || list.length < 2) return;
-            var chips = [];
-            list.forEach(function (a) {
-                var chip = $('<div class="avost-chip selector"></div>');
-                chip.append($('<span class="avost-chip__name"></span>').text(relationLabel(a)));
-                if (a.year) chip.append($('<span class="avost-chip__year"></span>').text(a.year));
-                if (a.id === anime.id) chip.addClass('avost-chip--current');
-                chip.on('hover:focus', function () {
-                    grid.track(chip);
-                    relLine.update(chip, true);
-                    scroll.update(head, false);
-                });
-                chip.on('hover:hover hover:touch', function () { grid.track(chip); });
-                chip.on('hover:enter', function () {
-                    if (a.id === anime.id) return;
-                    Lampa.Activity.replace({ anime: a, title: a.ru });
-                });
-                relLine.append(chip);
-                chips.push(chip);
+        // Переключение между сезонами/фильмами/ОВА без перезагрузки экрана:
+        // системный список Lampa (удобно пультом) и замена содержимого этой же страницы.
+        function switchTo(a) {
+            if (a.id === anime.id) return;
+            anime = a;
+            object.anime = a; // чтобы «Назад»/перезагрузка активности помнили выбранную часть
+            self.activity.loader(true);
+            loadAnime(a.id, build, function () {
+                scroll.clear();
+                scroll.append($('<div class="avost-empty">Не удалось получить список серий.</div>'));
+                self.activity.loader(false);
+                self.activity.toggle();
             });
-            rows[ROW_REL] = chips;
-            grid.set(rows);
-            relBox.show();
-            if (Lampa.Activity.active() && Lampa.Activity.active().activity === self.activity &&
-                Lampa.Controller.enabled().name === 'animevost_anime') {
-                Lampa.Controller.collectionSet(scroll.render());
-            }
+        }
+
+        function openRelated() {
+            var items = related.map(function (a) {
+                var total = a.total ? ' · ' + a.current + '/' + a.total + (a.plus ? '+' : '') : '';
+                return {
+                    title: relationLabel(a) + (a.year ? ' · ' + a.year : ''),
+                    subtitle: a.ru + total,
+                    value: a,
+                    selected: a.id === anime.id
+                };
+            });
+            Lampa.Select.show({
+                title: 'Сезоны и фильмы',
+                items: items,
+                onSelect: function (it) {
+                    Lampa.Controller.toggle('animevost_anime');
+                    switchTo(it.value);
+                },
+                onBack: function () { Lampa.Controller.toggle('animevost_anime'); }
+            });
+        }
+
+        function renderRelated(list) {
+            if (list.length < 2 || !relBtn) return;
+            related = list;
+            relBtn.text('Сезоны и фильмы · ' + list.length).show();
+            // кнопка встала в ряд — пересобираем ряд, не теряя текущий фокус
+            rows[ROW_BTNS] = btnRow();
+            grid.set(rows, true);
+        }
+
+        function btnRow() {
+            return [continueBtn, relBtn, plBtn, qBtn].filter(function (b) { return b && b.css('display') !== 'none'; });
         }
 
         function button(container, label, act) {
@@ -889,7 +915,8 @@
             if (info) anime = $.extend({}, anime, info);
             eps = playlist;
             epNodes = [];
-            rows = [[], [], []];
+            rows = [[], []];
+            related = [];
             scroll.clear();
 
             head = $('<div class="avost-anime">' +
@@ -899,7 +926,6 @@
                 '<div class="avost-anime__meta"></div>' +
                 '<div class="avost-anime__timer"></div>' +
                 '<div class="avost-anime__btns"></div>' +
-                '<div class="avost-anime__rel"><div class="avost-anime__rel-title">Сезоны и фильмы</div></div>' +
                 '<div class="avost-anime__descr"></div></div></div>');
 
             setImage(head.find('img'), anime.poster);
@@ -918,24 +944,21 @@
             var btns = head.find('.avost-anime__btns');
             continueBtn = button(btns, 'Смотреть', function () { play(resumeIndex()); });
 
-            var plBtn = button(btns, 'Плеер: ' + PLAYERS[setting('animevost_player', 'lampa')], function () {
+            relBtn = button(btns, 'Сезоны и фильмы', openRelated).hide();
+
+            plBtn = button(btns, 'Плеер: ' + PLAYERS[setting('animevost_player', 'lampa')], function () {
                 choosePlayer(function (v) {
                     plBtn.text('Плеер: ' + PLAYERS[v]);
                     Lampa.Controller.toggle('animevost_anime');
                 });
             });
 
-            var qBtn = button(btns, 'Качество: ' + (setting('animevost_quality', 'hd') === 'hd' ? '720p' : '480p'), function () {
+            qBtn = button(btns, 'Качество: ' + (setting('animevost_quality', 'hd') === 'hd' ? '720p' : '480p'), function () {
                 var q = setting('animevost_quality', 'hd') === 'hd' ? 'std' : 'hd';
                 Lampa.Storage.set('animevost_quality', q);
                 qBtn.text('Качество: ' + (q === 'hd' ? '720p' : '480p'));
             });
-            rows[ROW_BTNS] = [continueBtn, plBtn, qBtn];
-
-            // ряд 1: сезоны (появляется, когда загрузится поиск связанных тайтлов)
-            relBox = head.find('.avost-anime__rel').hide();
-            relLine = new Lampa.Scroll({ horizontal: true, step: 300 });
-            relBox.append(relLine.render());
+            rows[ROW_BTNS] = btnRow();
 
             scroll.append(head);
 
