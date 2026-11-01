@@ -7,6 +7,7 @@
 (function () {
     'use strict';
 
+    var VERSION = '1.0.0';
     var DEFAULT_API = 'https://api.animevost.org/v1';
     var DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
     var MONTHS = { 'января': 0, 'февраля': 1, 'марта': 2, 'апреля': 3, 'мая': 4, 'июня': 5, 'июля': 6, 'августа': 7, 'сентября': 8, 'октября': 9, 'ноября': 10, 'декабря': 11 };
@@ -256,7 +257,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { lampaQuery: lampaQuery, parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
+        module.exports = { VERSION: VERSION, lampaQuery: lampaQuery, parseSchedule: parseSchedule, applySchedule: applySchedule, nextAiring: nextAiring, relationKind: relationKind, countdownText: countdownText, franchiseKey: franchiseKey, relationLabel: relationLabel, sortRelated: sortRelated, parseAnime: parseAnime, groupByDay: groupByDay, fmtTime: fmtTime, dayIndex: dayIndex };
     }
 
     if (typeof window === 'undefined' || typeof Lampa === 'undefined') return;
@@ -1583,6 +1584,11 @@
 
     function addSettings() {
         Lampa.SettingsApi.addComponent({ component: 'animevost', name: 'AnimeVost', icon: ICON });
+        Lampa.SettingsApi.addParam({
+            component: 'animevost',
+            param: { name: 'animevost_version', type: 'static', default: '' },
+            field: { name: 'Версия плагина', description: VERSION }
+        });
 
         Lampa.SettingsApi.addParam({
             component: 'animevost',
@@ -1720,6 +1726,7 @@
     }
 
     function start() {
+        console.log('AnimeVost', 'v' + VERSION);
         injectStyle();
         cleanCaches();
         hookPlayer();
