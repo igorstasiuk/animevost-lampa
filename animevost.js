@@ -357,8 +357,30 @@
         return httpsify(url);
     }
 
+    // Какие плееры имеет смысл предлагать на этом устройстве
+    function availablePlayers() {
+        var P = Lampa.Platform, keys = ['lampa', 'inner'];
+        var is = function (n) { try { return P.is(n); } catch (e) { return false; } };
+        var mac = false;
+        try { mac = !!(P.macOS && P.macOS()); } catch (e) { /* ignore */ }
+
+        if (is('android')) keys.push('android');
+        if (is('webos')) keys.push('webos');
+        if (is('apple') || is('apple_tv')) keys.push('vlc', 'infuse', 'nplayer', 'senplayer');
+        if (mac) keys.push('iina', 'mpv', 'infuse', 'nplayer', 'senplayer');
+        keys.push('copy');
+
+        // выбранный ранее плеер оставляем в списке, даже если платформа не определилась
+        var cur = setting('animevost_player', 'lampa');
+        if (keys.indexOf(cur) < 0 && PLAYERS[cur]) keys.splice(2, 0, cur);
+        return keys.filter(function (k, i) { return keys.indexOf(k) === i; });
+    }
+
     function choosePlayer(done) {
-        var items = Object.keys(PLAYERS).map(function (k) { return { title: PLAYERS[k], value: k }; });
+        var cur = setting('animevost_player', 'lampa');
+        var items = availablePlayers().map(function (k) {
+            return { title: PLAYERS[k], value: k, selected: k === cur };
+        });
         var back = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Плеер',
@@ -453,57 +475,92 @@
             '.avost-anime__en{opacity:.6;margin-top:.2em}' +
             '.avost-anime__meta{margin:.8em 0;opacity:.8}' +
             '.avost-anime__timer{margin:.3em 0 .6em;font-size:1.2em;color:#ffa94d}' +
-            '.avost-anime__rel{margin:.6em 0}' +
+            '.avost-anime__rel{margin:.6em 0;max-width:60em}' +
             '.avost-anime__rel-title{opacity:.6;margin-bottom:.4em}' +
-            '.avost-rel{display:flex;flex-wrap:wrap;gap:.6em}' +
-            '.avost-chip{padding:.5em 1em;border-radius:.6em;background:rgba(255,255,255,.1)}' +
+                        '.avost-chip{padding:.6em 1.2em;margin:0 .5em 0 0;border-radius:.6em;background:rgba(255,255,255,.1);white-space:nowrap;flex-shrink:0}' +
             '.avost-chip__year{opacity:.55;margin-left:.6em;font-size:.9em}' +
             '.avost-chip--current{background:#e8590c;color:#fff}' +
             '.avost-chip.focus{background:#fff;color:#000}' +
             '.avost-anime__descr{margin:1em 0;line-height:1.45;max-height:7.5em;overflow:hidden;opacity:.85}' +
             '.avost-anime__btns{display:flex;flex-wrap:wrap;gap:.8em;margin:1em 0}' +
-            '.avost-eps{padding:0 1.5em 2em}' +
-            '.avost-ep{display:flex;align-items:center;gap:1.2em;padding:.6em;border-radius:.7em;margin-bottom:.4em}' +
-            '.avost-ep.focus{background:rgba(255,255,255,.14)}' +
+                        '.avost-row .scroll__body{display:flex;flex-wrap:nowrap;align-items:flex-start}' +
+            '.avost-row--eps{margin-top:1em}' +
+            '.avost-ep{position:relative;width:24em;margin:0 .6em;flex-shrink:0;border-radius:.8em;padding:.4em}' +
+            '.avost-ep.focus{background:rgba(255,255,255,.16);box-shadow:0 0 0 .2em #fff}' +
             '.avost-ep.watched{opacity:.55}' +
-            '.avost-ep__img{width:10em;height:5.6em;border-radius:.5em;overflow:hidden;background:#2a2a2a;flex-shrink:0}' +
+            '.avost-ep__img{position:relative;height:13.5em;border-radius:.6em;overflow:hidden;background:#2a2a2a}' +
             '.avost-ep__img img{width:100%;height:100%;object-fit:cover}' +
-            '.avost-ep__info{flex:1;min-width:0}' +
-            '.avost-ep__name{font-size:1.3em}' +
-            '.avost-ep__sub{opacity:.6;margin-top:.2em;font-size:.95em}' +
-            '.avost-ep__bar{height:.3em;background:rgba(255,255,255,.15);border-radius:.2em;margin-top:.5em;overflow:hidden}' +
+            '.avost-ep__check{display:none;position:absolute;right:.5em;top:.4em;background:#2f9e44;color:#fff;border-radius:50%;width:1.6em;height:1.6em;line-height:1.6em;text-align:center}' +
+            '.avost-ep.watched .avost-ep__check{display:block}' +
+            '.avost-ep__bar{position:absolute;left:0;right:0;bottom:0;height:.45em;background:rgba(0,0,0,.55)}' +
             '.avost-ep__bar div{height:100%;background:#e8590c}' +
+            '.avost-ep__name{font-size:1.5em;margin-top:.5em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+            '.avost-ep__sub{opacity:.65;margin-top:.15em;min-height:1.3em}' +
             '.avost-empty{padding:3em 1.5em;font-size:1.3em;opacity:.7}' +
             '@media (max-width:700px){.avost-anime{flex-direction:column}.avost-anime__poster{width:10em}}' +
             '</style>');
     }
 
-    function esc(s) {
-        return $('<div>').text(s || '').html();
-    }
+    // Навигация пультом: каждый ряд — массив элементов, фокус двигаем сами,
+    // а не через пространственный Navigator (на ТВ он прыгает между вложенными скроллами).
+    function Grid(name, scroll) {
+        var rows = [], r = 0, c = 0, self = this;
 
-    // Общая настройка контроллера для вертикального скролла с навигатором
-    function bindController(name, getScroll, getLast) {
-        Lampa.Controller.add(name, {
-            toggle: function () {
-                Lampa.Controller.collectionSet(getScroll().render());
-                Lampa.Controller.collectionFocus(getLast() || false, getScroll().render());
-            },
-            left: function () {
-                if (Navigator.canmove('left')) Navigator.move('left');
-                else Lampa.Controller.toggle('menu');
-            },
-            right: function () { Navigator.move('right'); },
-            up: function () {
-                if (Navigator.canmove('up')) Navigator.move('up');
-                else Lampa.Controller.toggle('head');
-            },
-            down: function () {
-                if (Navigator.canmove('down')) Navigator.move('down');
-            },
-            back: function () { Lampa.Activity.backward(); }
-        });
-        Lampa.Controller.toggle(name);
+        function row(i) { return rows[i] || []; }
+
+        this.set = function (arr) { rows = arr; };
+        this.at = function (nr, nc) { r = nr; c = nc || 0; };
+
+        // вызывается из hover:focus / hover:hover — синхронизирует позицию с мышью и касанием
+        this.track = function (el) {
+            el = el[0] || el;
+            for (var i = 0; i < rows.length; i++) {
+                for (var j = 0; j < rows[i].length; j++) {
+                    if (rows[i][j][0] === el) { r = i; c = j; return; }
+                }
+            }
+        };
+
+        this.focus = function () {
+            if (!row(r).length) {
+                for (var i = 0; i < rows.length; i++) if (rows[i].length) { r = i; c = 0; break; }
+            }
+            var list = row(r);
+            if (!list.length) return;
+            c = Math.max(0, Math.min(c, list.length - 1));
+            Lampa.Controller.collectionFocus(list[c], scroll.render());
+        };
+
+        this.step = function (d) {
+            var n = r + d;
+            while (n >= 0 && n < rows.length && !rows[n].length) n += d;
+            if (n < 0 || n >= rows.length) return false;
+            r = n;
+            this.focus();
+            return true;
+        };
+
+        this.bind = function () {
+            Lampa.Controller.add(name, {
+                toggle: function () {
+                    Lampa.Controller.collectionSet(scroll.render());
+                    self.focus();
+                },
+                left: function () {
+                    if (c > 0) { c--; self.focus(); }
+                    else Lampa.Controller.toggle('menu');
+                },
+                right: function () {
+                    if (c < row(r).length - 1) { c++; self.focus(); }
+                },
+                up: function () {
+                    if (!self.step(-1)) Lampa.Controller.toggle('head');
+                },
+                down: function () { self.step(1); },
+                back: function () { Lampa.Activity.backward(); }
+            });
+            Lampa.Controller.toggle(name);
+        };
     }
 
     function openAnime(a) {
@@ -524,7 +581,8 @@
         var self = this;
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
         var html = $('<div class="avost"></div>');
-        var last = null;
+        var grid = new Grid('animevost_main', scroll);
+        var rows = [];
         var bar;
 
         scroll.minus();
@@ -535,14 +593,14 @@
                 '<div class="avost-card__img"><img alt=""/></div>' +
                 '<div class="avost-card__title"></div></div>');
             el.find('.avost-card__title').text(a.ru);
-            var img = el.find('img');
-            setImage(img, a.poster);
+            setImage(el.find('img'), a.poster);
             var b = badge || a.nextEp || (a.current ? a.current + '/' + (a.total || '?') + (a.plus ? '+' : '') : '');
             if (b) el.find('.avost-card__img').append($('<div class="avost-card__badge"></div>').text(b));
             return el;
         }
 
         function row(title, list, badgeFn) {
+            var items = [];
             var line = new Lampa.Scroll({ horizontal: true, step: 300 });
             var wrap = $('<div class="avost-row"><div class="avost-row__title"></div></div>');
             wrap.find('.avost-row__title').text(title).toggle(!!title);
@@ -550,22 +608,25 @@
             list.forEach(function (a) {
                 var el = card(a, badgeFn && badgeFn(a));
                 el.on('hover:focus', function () {
-                    last = el[0];
-                    line.update(el, false);
+                    grid.track(el);
+                    line.update(el, true);
                     scroll.update(wrap, false);
                 });
-                el.on('hover:hover hover:touch', function () { last = el[0]; });
+                el.on('hover:hover hover:touch', function () { grid.track(el); });
                 el.on('hover:enter', function () { openAnime(a); });
                 line.append(el);
+                items.push(el);
             });
 
             wrap.append(line.render());
             scroll.append(wrap);
+            rows.push(items);
         }
 
         function button(label, act) {
             var el = $('<div class="avost-btn selector"></div>').text(label);
-            el.on('hover:focus', function () { last = el[0]; scroll.update(bar, false); });
+            el.on('hover:focus', function () { grid.track(el); scroll.update(bar, false); });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
             el.on('hover:enter', act);
             bar.append(el);
             return el;
@@ -573,14 +634,15 @@
 
         function toolbar() {
             bar = $('<div class="avost-bar"></div>');
-            button('Поиск', function () {
+            var btns = [];
+            btns.push(button('Поиск', function () {
                 Lampa.Input.edit({ free: true, title: 'Поиск аниме', nosave: true, value: '' }, function (value) {
                     if (value) Lampa.Activity.push({ url: '', title: 'Поиск: ' + value, component: 'animevost_main', query: value, page: 1 });
                     else Lampa.Controller.toggle('animevost_main');
                 });
-            });
+            }));
             if (!object.query) {
-                button('Обновить', function () { self.reload(true); });
+                btns.push(button('Обновить', function () { self.reload(true); }));
             }
             var pl = button('Плеер: ' + PLAYERS[setting('animevost_player', 'lampa')], function () {
                 choosePlayer(function (v) {
@@ -588,7 +650,9 @@
                     Lampa.Controller.toggle('animevost_main');
                 });
             });
+            btns.push(pl);
             scroll.append(bar);
+            rows.push(btns);
         }
 
         function history() {
@@ -598,9 +662,16 @@
                 .slice(0, 20);
         }
 
+        function finish() {
+            grid.set(rows);
+            grid.at(rows.length > 1 ? 1 : 0, 0); // сразу на первую карточку, а не на панель кнопок
+            self.activity.loader(false);
+            self.activity.toggle();
+        }
+
         function build(sections) {
             scroll.clear();
-            last = null;
+            rows = [];
             toolbar();
 
             if (!object.query) {
@@ -614,17 +685,15 @@
                 scroll.append($('<div class="avost-empty">Ничего не найдено</div>'));
             }
             sections.forEach(function (s) { row(s.title, s.items); });
-
-            self.activity.loader(false);
-            self.activity.toggle();
+            finish();
         }
 
         function fail() {
             scroll.clear();
+            rows = [];
             toolbar();
             scroll.append($('<div class="avost-empty">Не удалось загрузить данные AnimeVost. Проверьте сеть или адрес API в настройках.</div>'));
-            self.activity.loader(false);
-            self.activity.toggle();
+            finish();
         }
 
         this.reload = function (force) {
@@ -650,7 +719,7 @@
 
         this.start = function () {
             if (Lampa.Activity.active().activity !== this.activity) return;
-            bindController('animevost_main', function () { return scroll; }, function () { return last; });
+            grid.bind();
         };
 
         this.pause = function () {};
@@ -663,15 +732,19 @@
     /*  Component: страница тайтла и список серий                         */
     /* ------------------------------------------------------------------ */
 
+    // ряды страницы: 0 — кнопки, 1 — сезоны/фильмы, 2 — серии
+    var ROW_BTNS = 0, ROW_REL = 1, ROW_EPS = 2;
+
     function AnimeComponent(object) {
         var self = this;
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
         var html = $('<div class="avost"></div>');
+        var grid = new Grid('animevost_anime', scroll);
         var anime = object.anime;
         var eps = [];
         var epNodes = [];
-        var last = null;
-        var continueBtn, relBox, timerBox, tick;
+        var rows = [[], [], []];
+        var continueBtn, relBox, relLine, timerBox, head, tick;
 
         scroll.minus();
         html.append(scroll.render());
@@ -694,23 +767,26 @@
         function play(idx) {
             playEpisode(anime, eps, idx, function () {
                 refreshProgress();
-                var node = epNodes[idx];
-                if (node) last = node[0];
+                grid.at(ROW_EPS, idx);
                 Lampa.Controller.toggle('animevost_anime');
             });
         }
 
-        function epNode(ep, idx) {
+        function epNode(ep, idx, line, wrap) {
             var el = $('<div class="avost-ep selector">' +
-                '<div class="avost-ep__img"><img alt=""/></div>' +
-                '<div class="avost-ep__info"><div class="avost-ep__name"></div>' +
-                '<div class="avost-ep__sub"></div>' +
-                '<div class="avost-ep__bar"><div></div></div></div></div>');
+                '<div class="avost-ep__img"><img alt=""/>' +
+                '<div class="avost-ep__check">✓</div>' +
+                '<div class="avost-ep__bar"><div></div></div></div>' +
+                '<div class="avost-ep__name"></div>' +
+                '<div class="avost-ep__sub"></div></div>');
             el.find('.avost-ep__name').text(ep.name);
-            var img = el.find('img');
-            setImage(img, ep.preview, function () { img.hide(); });
-            el.on('hover:focus', function () { last = el[0]; scroll.update(el, false); });
-            el.on('hover:hover hover:touch', function () { last = el[0]; });
+            setImage(el.find('img'), ep.preview, function () { el.find('img').hide(); });
+            el.on('hover:focus', function () {
+                grid.track(el);
+                line.update(el, true);
+                scroll.update(wrap, false);
+            });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
             el.on('hover:enter', function () { play(idx); });
             return el;
         }
@@ -724,7 +800,7 @@
                 el.find('.avost-ep__bar div').css('width', Math.min(100, v.percent) + '%');
                 el.find('.avost-ep__sub').text(
                     v.percent >= 90 ? 'Просмотрено' :
-                    v.time > 5 ? 'Остановились на ' + fmtTime(v.time) + (v.duration ? ' из ' + fmtTime(v.duration) : '') : ''
+                    v.time > 5 ? 'Остановились на ' + fmtTime(v.time) : ''
                 );
             });
             if (continueBtn) {
@@ -745,33 +821,39 @@
 
         // Переключатель сезонов/фильмов/ОВА; показываем только если связанных тайтлов больше одного
         function renderRelated(list) {
-            if (!relBox || !relBox.length || list.length < 2) return;
-            relBox.empty();
-            relBox.append('<div class="avost-anime__rel-title">Сезоны и фильмы</div>');
-            var wrap = $('<div class="avost-rel"></div>');
+            if (!relBox || list.length < 2) return;
+            var chips = [];
             list.forEach(function (a) {
                 var chip = $('<div class="avost-chip selector"></div>');
                 chip.append($('<span class="avost-chip__name"></span>').text(relationLabel(a)));
                 if (a.year) chip.append($('<span class="avost-chip__year"></span>').text(a.year));
                 if (a.id === anime.id) chip.addClass('avost-chip--current');
-                chip.on('hover:focus', function () { last = chip[0]; scroll.update(chip, false); });
-                chip.on('hover:hover hover:touch', function () { last = chip[0]; });
+                chip.on('hover:focus', function () {
+                    grid.track(chip);
+                    relLine.update(chip, true);
+                    scroll.update(head, false);
+                });
+                chip.on('hover:hover hover:touch', function () { grid.track(chip); });
                 chip.on('hover:enter', function () {
                     if (a.id === anime.id) return;
                     Lampa.Activity.replace({ anime: a, title: a.ru });
                 });
-                wrap.append(chip);
+                relLine.append(chip);
+                chips.push(chip);
             });
-            relBox.append(wrap);
+            rows[ROW_REL] = chips;
+            grid.set(rows);
+            relBox.show();
             if (Lampa.Activity.active() && Lampa.Activity.active().activity === self.activity &&
                 Lampa.Controller.enabled().name === 'animevost_anime') {
-                Lampa.Controller.toggle('animevost_anime'); // пересобрать список фокусируемых элементов
+                Lampa.Controller.collectionSet(scroll.render());
             }
         }
 
         function button(container, label, act) {
             var el = $('<div class="avost-btn selector"></div>').text(label);
-            el.on('hover:focus', function () { last = el[0]; scroll.update(el, false); });
+            el.on('hover:focus', function () { grid.track(el); scroll.update(head, false); });
+            el.on('hover:hover hover:touch', function () { grid.track(el); });
             el.on('hover:enter', act);
             container.append(el);
             return el;
@@ -781,16 +863,17 @@
             if (info) anime = $.extend({}, anime, info);
             eps = playlist;
             epNodes = [];
+            rows = [[], [], []];
             scroll.clear();
 
-            var head = $('<div class="avost-anime">' +
+            head = $('<div class="avost-anime">' +
                 '<div class="avost-anime__poster"><img alt=""/></div>' +
                 '<div class="avost-anime__body">' +
                 '<div class="avost-anime__title"></div><div class="avost-anime__en"></div>' +
                 '<div class="avost-anime__meta"></div>' +
                 '<div class="avost-anime__timer"></div>' +
                 '<div class="avost-anime__btns"></div>' +
-                '<div class="avost-anime__rel"></div>' +
+                '<div class="avost-anime__rel"><div class="avost-anime__rel-title">Сезоны и фильмы</div></div>' +
                 '<div class="avost-anime__descr"></div></div></div>');
 
             setImage(head.find('img'), anime.poster);
@@ -802,10 +885,10 @@
                 offline ? 'офлайн-кеш' : ''
             ].filter(Boolean).join(' · '));
             head.find('.avost-anime__descr').text(anime.description);
-            relBox = head.find('.avost-anime__rel');
             timerBox = head.find('.avost-anime__timer');
             tickTimer();
 
+            // ряд 0: кнопки
             var btns = head.find('.avost-anime__btns');
             continueBtn = button(btns, 'Смотреть', function () { play(resumeIndex()); });
 
@@ -821,23 +904,34 @@
                 Lampa.Storage.set('animevost_quality', q);
                 qBtn.text('Качество: ' + (q === 'hd' ? '720p' : '480p'));
             });
+            rows[ROW_BTNS] = [continueBtn, plBtn, qBtn];
+
+            // ряд 1: сезоны (появляется, когда загрузится поиск связанных тайтлов)
+            relBox = head.find('.avost-anime__rel').hide();
+            relLine = new Lampa.Scroll({ horizontal: true, step: 300 });
+            relBox.append(relLine.render());
 
             scroll.append(head);
 
-            var list = $('<div class="avost-eps"></div>');
+            // ряд 2: серии — одна строка больших тайлов с горизонтальной прокруткой
+            var wrap = $('<div class="avost-row avost-row--eps"><div class="avost-row__title">Серии</div></div>');
+            var line = new Lampa.Scroll({ horizontal: true, step: 450 });
             eps.forEach(function (ep, i) {
-                var n = epNode(ep, i);
+                var n = epNode(ep, i, line, wrap);
                 epNodes.push(n);
-                list.append(n);
+                line.append(n);
             });
-            scroll.append(list);
+            wrap.append(line.render());
+            scroll.append(wrap);
+            rows[ROW_EPS] = epNodes.slice();
+
             refreshProgress();
             loadRelated(anime, renderRelated);
 
             // фокус сразу на серии, которую нужно продолжить
-            var st = getMap('animevost_state')[anime.id];
-            if (st) last = epNodes[resumeIndex()][0];
-            else last = continueBtn[0];
+            grid.set(rows);
+            if (getMap('animevost_state')[anime.id] && epNodes.length) grid.at(ROW_EPS, resumeIndex());
+            else grid.at(ROW_BTNS, 0);
 
             self.activity.loader(false);
             self.activity.toggle();
@@ -857,7 +951,7 @@
         this.start = function () {
             if (Lampa.Activity.active().activity !== this.activity) return;
             refreshProgress();
-            bindController('animevost_anime', function () { return scroll; }, function () { return last; });
+            grid.bind();
         };
 
         this.pause = function () {};
