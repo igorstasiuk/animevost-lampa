@@ -148,6 +148,22 @@
         return setting('animevost_https', true) ? url.replace(/^http:\/\//, 'https://') : url;
     }
 
+    // У static.openni.ru истёк https-сертификат, а http работает, поэтому для картинок
+    // идём по цепочке: как отдал API -> другая схема -> прокси weserv -> заглушка.
+    function setImage(img, url, onFail) {
+        if (!url) return onFail ? onFail() : img.attr('src', './img/img_broken.svg');
+        var plain = url.replace(/^https?:\/\//, '');
+        var chain = [url, (/^https/.test(url) ? 'http://' : 'https://') + plain,
+            'https://images.weserv.nl/?url=' + encodeURIComponent(plain)];
+        var step = 0;
+        img.off('error.avost').on('error.avost', function () {
+            if (++step < chain.length) img.attr('src', chain[step]);
+            else if (onFail) onFail();
+            else img.attr('src', './img/img_broken.svg');
+        });
+        img.attr('src', chain[0]);
+    }
+
     function getMap(key) {
         var v = Lampa.Storage.get(key, '{}');
         return v && typeof v === 'object' ? v : {};
@@ -431,8 +447,7 @@
                 '<div class="avost-card__title"></div></div>');
             el.find('.avost-card__title').text(a.ru);
             var img = el.find('img');
-            img.on('error', function () { img.attr('src', './img/img_broken.svg'); });
-            img.attr('src', httpsify(a.poster));
+            setImage(img, a.poster);
             var b = badge || a.nextEp || (a.current ? a.current + '/' + (a.total || '?') + (a.plus ? '+' : '') : '');
             if (b) el.find('.avost-card__img').append($('<div class="avost-card__badge"></div>').text(b));
             return el;
@@ -596,8 +611,7 @@
                 '<div class="avost-ep__bar"><div></div></div></div></div>');
             el.find('.avost-ep__name').text(ep.name);
             var img = el.find('img');
-            img.on('error', function () { img.hide(); });
-            if (ep.preview) img.attr('src', httpsify(ep.preview));
+            setImage(img, ep.preview, function () { img.hide(); });
             el.on('hover:focus', function () { last = el[0]; scroll.update(el, false); });
             el.on('hover:hover hover:touch', function () { last = el[0]; });
             el.on('hover:enter', function () { play(idx); });
@@ -648,7 +662,7 @@
                 '<div class="avost-anime__btns"></div>' +
                 '<div class="avost-anime__descr"></div></div></div>');
 
-            head.find('img').attr('src', httpsify(anime.poster));
+            setImage(head.find('img'), anime.poster);
             head.find('.avost-anime__title').text(anime.ru);
             head.find('.avost-anime__en').text(anime.en);
             head.find('.avost-anime__meta').text([
