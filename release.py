@@ -78,13 +78,31 @@ def section_body(text, version):
     return m.group(1).strip() if m else ""
 
 
-def purge(ref):
-    url = "https://purge.jsdelivr.net/gh/%s@%s/animevost.js" % (REPO, ref)
-    try:
-        with urllib.request.urlopen(url, timeout=20) as r:
-            print("jsDelivr purge @%s: HTTP %s" % (ref, r.status))
-    except Exception as e:  # сеть не критична для выпуска
-        print("jsDelivr purge @%s не удался: %s" % (ref, e))
+def purge(ref, want=None):
+    """Сбросить кеш jsDelivr для @ref. С want — повторять, пока CDN не отдаст эту версию:
+    сразу после пуша jsDelivr ещё не знает про новый тег, и ранний purge перекеширует старую."""
+    import time
+    base = "gh/%s@%s/animevost.js" % (REPO, ref)
+    for attempt in range(6 if want else 1):
+        try:
+            with urllib.request.urlopen("https://purge.jsdelivr.net/" + base, timeout=20) as r:
+                print("jsDelivr purge @%s: HTTP %s" % (ref, r.status))
+        except Exception as e:  # сеть не критична для выпуска
+            print("jsDelivr purge @%s не удался: %s" % (ref, e))
+        if not want:
+            return
+        time.sleep(5)
+        try:
+            with urllib.request.urlopen("https://cdn.jsdelivr.net/" + base, timeout=20) as r:
+                got = r.headers.get("x-jsd-version")
+        except Exception as e:
+            got = None
+            print("проверка @%s не удалась: %s" % (ref, e))
+        if got == want:
+            print("jsDelivr @%s отдаёт %s" % (ref, got))
+            return
+        print("jsDelivr @%s пока отдаёт %s (нужно %s), повтор %d/6" % (ref, got, want, attempt + 1))
+    print("ВНИМАНИЕ: @%s всё ещё не обновился — повтори позже: curl https://purge.jsdelivr.net/%s" % (ref, base))
 
 
 def check():
@@ -160,7 +178,7 @@ def release(version, dry, push):
         run("git", "push", "origin", "v%s" % version)
         run("git", "push", "--force", "origin", "refs/tags/latest")
         print("Запушены main, тег v%s и latest" % version)
-        purge("1")
+        purge("1", version)
         if shutil.which("gh"):
             run("gh", "release", "create", "v%s" % version, "--title", "v%s" % version, "--notes", section_body(read(CHANGELOG), version))
             print("Создан GitHub Release")
