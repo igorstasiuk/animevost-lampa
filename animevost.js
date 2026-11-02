@@ -1442,6 +1442,12 @@
         function toolbar() {
             bar = $('<div class="avost-bar"></div>');
             btns = [];
+            // из каталога и результатов поиска — явный возврат на дашборд (заменяем экран, а не наращиваем стек)
+            if (object.catalog || object.query) {
+                btns.push(button('← Дашборд', function () {
+                    Lampa.Activity.replace({ url: '', title: 'AnimeVost', component: 'animevost_main', page: 1 }, true);
+                }));
+            }
             btns.push(button('Поиск', function () {
                 Lampa.Activity.push({ url: '', title: 'Поиск', component: 'animevost_search', page: 1 });
             }));

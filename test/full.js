@@ -24,7 +24,7 @@ function mk(api){
   Utils:{hash:s=>'h'+s,copyTextToClipboard:()=>{}},
   Timeline:{listener:{follow:(n,f)=>S.tl.push(f),remove:(n,f)=>{S.tl=S.tl.filter(x=>x!==f)}},view:h=>({hash:h,percent:S.store['p_'+h]||0,time:S.store['t_'+h]||0,duration:S.store['d_'+h]||1400}),update:p=>{S.store['p_'+p.hash]=p.percent;S.store['t_'+p.hash]=p.time;S.store['d_'+p.hash]=p.duration||1400}},Modal:{open:o=>{S.modal=o},close:()=>{S.modalClosed=true}},
   Controller:{add:(n,h)=>{S.handlers[n]=h},toggle:n=>{S.cur=n;S.log.push('toggle:'+n);S.handlers[n]&&S.handlers[n].toggle&&S.handlers[n].toggle()},collectionSet:()=>{},collectionFocus:(el)=>{S.focused=el;w.$('.focus').removeClass('focus');w.$(el).addClass('focus').trigger('hover:focus')},enabled:()=>({name:S.cur})},
-  Activity:{push:o=>S.pushed.push(o),active:()=>({activity:S.act}),backward:()=>S.log.push('back'),replace:()=>{}},
+  Activity:{push:o=>S.pushed.push(o),active:()=>({activity:S.act}),backward:()=>S.log.push('back'),replace:(o,c)=>{S.replaced={o:o,clear:c}}},
   Player:{play:i=>S.played.push(i),playlist:()=>{},callback:c=>{S.cb=c},runas:v=>{S.runas=v},listener:{follow:(n,f)=>{(S.pl=S.pl||{})[n]=f}}},
   Select:{show:o=>{S.sel=o}},Noty:{show:()=>{}},Input:{edit:(o,cb)=>{S.input=cb}},Platform:{is:n=>n==='android',macOS:()=>false},
   SettingsApi:{addComponent:()=>{},addParam:p=>{(S.params=S.params||[]).push(p)}},Search:{addSource:()=>{},open:o=>{S.searchOpen=o}},Cache:{rewriteData:(t,k,v)=>{S.idb[k]=JSON.parse(JSON.stringify(v));return Promise.resolve()},getData:(t,k)=>Promise.resolve(S.idb[k]||null)},ContentRows:{add:r=>S.rows.push(r)},Component:{add:(n,c)=>S.comps[n]=c},Listener:{follow:()=>{}},
@@ -499,6 +499,20 @@ const inDom=(S)=>S.focused&&S.w.document.body.contains?true:false;
  'наруто'.split('').forEach(ch=>k4(ch).trigger('hover:enter'));k4('Очистить').trigger('hover:enter');await sleep(2500);
  ok(S.$(se4.render()).find('.avost-search__query').text().indexOf('Начни')===0&&!S.$(se4.render()).find('.avost-sug:not(.avost-sug--text)').length,'late response after «Очистить» does not resurrect suggestions');
  se4.destroy();ok(S.log.length>=0&&errors.length===0,'no JS errors in search tests: '+errors.join('|'));
+
+ console.log('30. catalog / results: button back to the dashboard');
+ S=mk();S.native=(u,c,e)=>c(catD);
+ const bc=new S.comps.animevost_main({catalog:{kind:'genre',slug:'drama',title:'Жанр: Драма'}});bc.activity=S.act;bc.create();await until(()=>S.$(bc.render()).find('.avost-card').length===10,80);bc.start();
+ const dbtn2=S.$(bc.render()).find('.avost-bar .avost-btn');ok(dbtn2.first().text()==='← Дашборд','first toolbar button in catalog is «← Дашборд»: '+dbtn2.map((i,e)=>S.$(e).text()).get().join(' | '));
+ for(let i=0;i<4&&!/Дашборд/.test(S.label());i++)S.key('content','up');
+ ok(/Дашборд/.test(S.label()),'D-pad reaches the button from the cards: '+S.label());
+ S.$(S.focused).trigger('hover:enter');
+ ok(S.replaced&&S.replaced.o.component==='animevost_main'&&!S.replaced.o.catalog&&!S.replaced.o.query&&S.replaced.clear===true,'replaces the screen with a clean dashboard activity: '+JSON.stringify(S.replaced&&S.replaced.o));
+ bc.destroy();
+ S=mk();const br=new S.comps.animevost_main({query:'наруто'});br.activity=S.act;br.create();await until(()=>S.$(br.render()).find('.avost-card').length,80);
+ ok(S.$(br.render()).find('.avost-bar .avost-btn').first().text()==='← Дашборд','search results page has the button too');br.destroy();
+ S=mk();const bd=new S.comps.animevost_main({});bd.activity=S.act;bd.create();await until(()=>S.$(bd.render()).find('.avost-card').length);
+ ok(!S.$(bd.render()).find('.avost-bar .avost-btn').filter((i,e)=>/Дашборд/.test(S.$(e).text())).length,'the dashboard itself has no such button');bd.destroy();
 
  console.log(`\n${pass} passed, ${failn} failed, js errors: ${errors.length}`);
  process.exit(failn?1:0);
